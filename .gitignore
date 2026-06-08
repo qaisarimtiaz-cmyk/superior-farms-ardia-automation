@@ -1,0 +1,26 @@
+# ── Dependencies ───────────────────────────────────────────
+node_modules/
+
+# ── Secrets & saved auth sessions ──────────────────────────
+.env
+.auth/
+auth.json
+
+# ── Playwright output ──────────────────────────────────────
+playwright-report/
+test-results/
+
+# ── Runtime / generated state ──────────────────────────────
+shared-state.json
+at-counter.json
+
+# ── Debug evidence (screenshots, video, grid dumps) ────────
+screenshot-*.png
+*.mp4
+tc10-grid-dump.html
+
+# ── Generated reports (Excel + client HTML) ────────────────
+reports/
+
+# ── Local tooling / editor state ───────────────────────────
+.claude/

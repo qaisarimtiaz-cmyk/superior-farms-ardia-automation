@@ -1,0 +1,20 @@
+{
+  "name": "d365-ardia-poc",
+  "version": "1.0.0",
+  "scripts": {
+    "codegen": "playwright codegen --target=typescript",
+    "test": "playwright test",
+    "test:auth": "playwright test --project=setup",
+    "test:e2e": "playwright test --project=e2e",
+    "report": "playwright show-report"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.42.0",
+    "@types/node": "^20.0.0",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "playwright": "^1.42.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}
