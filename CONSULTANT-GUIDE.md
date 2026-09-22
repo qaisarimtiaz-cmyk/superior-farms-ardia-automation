@@ -24,6 +24,9 @@ This guide is written for functional consultants who need to **set up and run th
 ## 1. Prerequisites
 
 - **Node.js** installed (version 18 or newer). Check by running `node --version` in a terminal.
+- **[Visual Studio Code](https://code.visualstudio.com/)** (recommended) — a free code editor. You don't need to write any code to use this suite, but it makes opening the folder, editing test data, and running tests much easier than a bare terminal.
+- **[Playwright Test for VSCode](https://marketplace.visualstudio.com/items?itemName=ms-playwright.playwright)** (recommended extension, installed from inside VS Code's Extensions panel) — adds a "Testing" panel where you can see every test case and run or debug any of them with a click, instead of typing terminal commands.
+- **Git** (or [GitHub Desktop](https://desktop.github.com/) for a visual tool) — to download (clone) this repository.
 - **Access to the D365 test environment and the Ardia app** with a valid Azure AD account.
 - **An authenticator app** (e.g. Microsoft Authenticator) set up for your account, since login requires approving an MFA (multi-factor authentication) push notification on your phone — **this suite cannot approve MFA for you**. Someone needs to be at their phone when a run starts.
 - A copy of this repository (folder) on your machine.

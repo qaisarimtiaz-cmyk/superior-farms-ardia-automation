@@ -8,6 +8,17 @@ Automated testing for Superior Farms' integration between **D365 Finance & Opera
 
 Microsoft releases D365 upgrades every few months. Re-checking that the Ardia integration still works correctly after each upgrade — by hand, every time — takes real time from real people. This suite automates those checks so they can be run in minutes instead of hours, by anyone on the team, not just a QA engineer.
 
+## Prerequisites
+
+Before you start, make sure you have:
+
+- **[Node.js](https://nodejs.org/)** (version 18 or newer) — the runtime this suite runs on.
+- **[Visual Studio Code](https://code.visualstudio.com/)** (recommended) — a free code editor. You don't need to write any code to use this suite, but VS Code makes it easy to open the folder, edit test data, and run tests with a few clicks.
+- **[Playwright Test for VSCode](https://marketplace.visualstudio.com/items?itemName=ms-playwright.playwright)** (recommended extension) — once installed, it adds a "Testing" panel to VS Code where you can see every test case and run or debug any of them with a click, instead of typing terminal commands.
+- **[Git](https://git-scm.com/downloads)** — to download (clone) this repository, or [GitHub Desktop](https://desktop.github.com/) if you prefer a visual tool.
+- **Access to the D365 test environment and the Ardia app**, with a valid Azure AD account.
+- **An authenticator app** (e.g. Microsoft Authenticator) set up for that account — logging in requires approving an MFA push notification on your phone.
+
 ## New here? Start with the guide
 
 📘 **[CONSULTANT-GUIDE.md](./CONSULTANT-GUIDE.md)** is a complete, no-jargon walkthrough for setting this up and running it yourself — installing the tools, logging in, running a test, and reading the results. If you're not sure where to start, start there.
