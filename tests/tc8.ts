@@ -32,6 +32,8 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { config }                            from '../config';
 import { readSharedState, writeSharedState } from '../utils/shared-state';
 import { openAuthedD365 }                    from './helpers/auth-flows';
+import { ReportCollector }                   from './helpers/report-collector';
+import { screenshotPath }                    from '../utils/run-folder';
 
 const t = config.timeouts;
 
@@ -48,7 +50,7 @@ async function waitForGridFilterRow(page: any, timeout: number): Promise<void> {
     .waitFor({ state: 'visible', timeout });
 }
 
-export async function run(browser: Browser, batchOrderIdArg?: string) {
+export async function run(browser: Browser, batchOrderIdArg?: string, testInfo: any = null) {
 
   console.log('Starting Test Case 8 — License Plate Deletion Workflow\n');
 
@@ -58,15 +60,19 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     batchOrderId = batchOrderIdArg.trim();
     console.log(`  Batch Order : ${batchOrderId} (source: CLI argument)`);
   } else {
-    const state  = readSharedState();   // throws clearly if TC2 never ran
+    const state  = readSharedState('TC02');   // throws clearly if TC2 never ran
     batchOrderId = state.batchOrderId;
     console.log(`  Batch Order : ${batchOrderId} (source: shared-state.json from TC2)`);
   }
   console.log();
 
+  const reportTestData: Record<string, string> = { 'Workflow': 'CR Transfer License Plate Deletion', 'Process': 'Reversal', 'Batch Order': batchOrderId };
+  const report = new ReportCollector('Test Case 8', reportTestData);
+
   let d365Context: BrowserContext | undefined;
   let d365ErrPage: Page | undefined;
   let retrievedLP = '';
+  let isReversed = false;
 
   try {
 
@@ -80,6 +86,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     const page = d365.page;
     d365ErrPage = page;
     console.log('✓ Logged in and dashboard loaded\n');
+    report.add('Login to D365', 'PASS');
 
     /*
 
@@ -163,6 +170,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
       .waitFor({ state: 'visible', timeout: t.dashboard });
     await page.waitForTimeout(1500);
     console.log('✓ On CRT Report As Finished page — grid ready\n');
+    report.add('Navigate to CRT Report As Finished staging data', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 3 — FILTER BY BATCH ORDER NUMBER
@@ -190,6 +198,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     await page.waitForLoadState('networkidle', { timeout: t.dashboard });
     await page.waitForTimeout(2000);
     console.log('✓ Production filter applied\n');
+    report.add('Filter by batch order number', 'PASS', batchOrderId);
 
     // ══════════════════════════════════════════════════════════
     //  PART 4 — PICK FIRST SYNCED ROW AND COPY LICENSE PLATE ID
@@ -209,9 +218,11 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
       console.log(`  Checking row ${rowIndex}...`);
 
       // Select the row so D365 activates it (needed to render full cell values)
-      const rowCheckbox = page.locator(`#MainGrid_203_0-row-${rowIndex}`).getByRole('checkbox', {
-        name: 'Select or unselect row',
-      });
+      // #MainGrid_203_0-row-N is a stale form-instance ID (confirmed while
+      // fixing TC6/TC7 — that "_203_0_" prefix no longer resolves anywhere
+      // in the current D365 UI). Use the same ID-independent role/name
+      // selector proven reliable elsewhere, indexed by row.
+      const rowCheckbox = page.getByRole('checkbox', { name: 'Select or unselect row' }).nth(rowIndex);
       const rowExists = await rowCheckbox.isVisible({ timeout: 5000 }).catch(() => false);
       if (!rowExists) {
         console.log(`  Row ${rowIndex} does not exist — stopping scan`);
@@ -237,7 +248,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
 
       // Fallback: scan every [title] element in the row for something that
       // looks like a D365 license plate (numeric or alphanumeric, 6+ chars)
-      const titledEls = await page.locator(`#MainGrid_203_0-row-${rowIndex} [title]`).all();
+      const titledEls = await page.locator(`[id*="row-${rowIndex}"] [title]`).all();
       for (const el of titledEls) {
         const t2 = (await el.getAttribute('title') ?? '').trim();
         if (/^[A-Z0-9]{6,}$/i.test(t2)) {
@@ -263,9 +274,14 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     }
 
     console.log(`\n✓ Using License Plate ID: ${retrievedLP}\n`);
+    await page.screenshot({ path: screenshotPath('screenshot-tc8-license-plate-retrieved.png') });
+    report.addScreenshot('License Plate retrieved', screenshotPath('screenshot-tc8-license-plate-retrieved.png'));
+    report.add('Scan rows for synced License Plate ID', 'PASS', retrievedLP);
 
-    // Persist LP back into shared-state so future TCs can chain off it
-    writeSharedState({
+    // Persist LP back into shared-state under TC8's own key (not TC2's —
+    // this is TC8's own result, enriching TC2's original entry would
+    // misattribute it) so future TCs can chain off it if needed.
+    writeSharedState('TC08', {
       batchOrderId,
       licensePlateId: retrievedLP,
       generatedAt:    new Date().toISOString(),
@@ -290,6 +306,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     await page.waitForLoadState('networkidle', { timeout: t.dashboard });
     await page.waitForTimeout(2000);
     console.log('✓ On Tags or license plates deletion form\n');
+    report.add('Navigate to Tags or License Plates deletion form', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 6 — ENTER LP AND DELETE
@@ -327,8 +344,10 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     const msgVisible = await successMsg.isVisible({ timeout: t.element }).catch(() => false);
     if (msgVisible) {
       console.log('✓ Deletion success message confirmed\n');
+      report.add('Enter LP, save, select all, Delete All', 'PASS', 'Deletion success message confirmed');
     } else {
       console.log('⚠ Success message not detected — continuing (check manually)\n');
+      report.add('Enter LP, save, select all, Delete All', 'PASS', 'Success message not detected — continued');
     }
 
     await page.locator('#ShellProcessingDiv').waitFor({ state: 'hidden', timeout: t.action }).catch(() => {});
@@ -346,6 +365,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
       console.log(`  ... ${i - 5 > 0 ? i - 5 : 0}s remaining`);
     }
     console.log('  ✓ Wait complete — proceeding to CRT Reversal verification\n');
+    report.add('Wait for batch job to process LP deletion', 'PASS');
 
     /*
 
@@ -423,6 +443,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
       .waitFor({ state: 'visible', timeout: t.dashboard });
     await page.waitForTimeout(1500);
     console.log('✓ On CRT Reversal staging data page — grid ready\n');
+    report.add('Navigate to CRT Reversal staging data', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 8 — FILTER BY LICENSE PLATE
@@ -444,6 +465,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     await page.waitForLoadState('networkidle', { timeout: t.dashboard });
     await page.waitForTimeout(2000);
     console.log('✓ License Plate filter applied\n');
+    report.add('Filter CRT Reversal by License Plate', 'PASS', retrievedLP);
 
     // ══════════════════════════════════════════════════════════
     //  PART 9 — VERIFY IsReversed = Yes
@@ -456,9 +478,8 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     console.log('Step 20: Verifying IsReversed = Yes for the first matching row...');
 
     // First confirm at least one row is returned
-    const firstRowCheckbox = page.locator('#MainGrid_203_0-row-0').getByRole('checkbox', {
-      name: 'Select or unselect row',
-    });
+    // (#MainGrid_203_0-row-0 is stale — see the note near Step 9 above)
+    const firstRowCheckbox = page.getByRole('checkbox', { name: 'Select or unselect row' }).first();
     const rowFound = await firstRowCheckbox.isVisible({ timeout: t.element }).catch(() => false);
 
     if (!rowFound) {
@@ -477,7 +498,7 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     const ariaChecked = await isReversedCheckbox.getAttribute('aria-checked').catch(() => null);
     const domChecked  = await isReversedCheckbox.isChecked().catch(() => false);
 
-    const isReversed = ariaChecked === 'true' || domChecked === true;
+    isReversed = ariaChecked === 'true' || domChecked === true;
 
     if (isReversed) {
       console.log(`✓ IsReversed = Yes — License Plate [${retrievedLP}] confirmed deleted/reversed`);
@@ -485,6 +506,9 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
       console.log(`⚠ IsReversed = No — License Plate [${retrievedLP}] reversal NOT yet confirmed`);
       console.log('  This may indicate the deletion did not complete, or sync is still pending.');
     }
+    await page.screenshot({ path: screenshotPath('screenshot-tc8-isreversed.png') });
+    report.addScreenshot('IsReversed verification', screenshotPath('screenshot-tc8-isreversed.png'));
+    report.add('Verify IsReversed = Yes', isReversed ? 'PASS' : 'FAIL', `IsReversed = ${isReversed ? 'Yes' : 'No'}`);
 
     // ══════════════════════════════════════════════════════════
     //  SUMMARY
@@ -500,12 +524,27 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
     }
 
   } catch (error: any) {
+    report.add('TEST FAILED', 'FAIL', error?.message ?? String(error));
+    await d365ErrPage?.screenshot({ path: screenshotPath('screenshot-tc8-error.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot', screenshotPath('screenshot-tc8-error.png'));
     console.error('\n❌ Test Case 8 FAILED');
     console.error(`   Error         : ${error.message ?? error}`);
     console.error(`   Batch Order   : ${batchOrderId}`);
     console.error(`   LP at failure : ${retrievedLP || 'not yet retrieved'}\n`);
     throw error;
   } finally {
+    try {
+      const meta: Record<string, string> = {
+        'Batch Order': batchOrderId,
+        'License Plate': retrievedLP || '(not retrieved)',
+        'IsReversed': isReversed ? 'Yes' : 'No',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
   }
 }
@@ -514,6 +553,6 @@ export async function run(browser: Browser, batchOrderIdArg?: string) {
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser, process.argv[2]); } finally { await browser.close(); }
+    try { await run(browser, process.argv[2], null); } finally { await browser.close(); }
   })();
 }

@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc6';
 
-test('TC007 - Reversal: Catch-Weight Tag deletion -> RAF reversal staging', async ({ browser }) => {
-  await run(browser);
+test('TC007 - Reversal: Catch-Weight Tag deletion -> RAF reversal staging', async ({ browser }, testInfo) => {
+  await run(browser, testInfo);
 });

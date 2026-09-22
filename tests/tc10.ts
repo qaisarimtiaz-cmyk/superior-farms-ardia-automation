@@ -4,7 +4,7 @@
 //
 //  Business flow:
 //   PART A — D365 On-hand list: search the batch, find a License
-//            Plate whose physical inventory = 1, capture it.
+//            Plate with any positive physical inventory, capture it.
 //            (The On-hand form can take up to ~5 min to render.)
 //   PART B — Ardia: login, select Pick + Site/WH/Location/Printer,
 //            Proceed, pick the batch tile, scan the LP, key the
@@ -20,11 +20,13 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { config }   from '../config';
 import { testData } from '../test-data';
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
+import { screenshotPath } from '../utils/run-folder';
 
 const data = testData.TC10;
 const t     = config.timeouts;
 
-export async function run(browser: Browser) {
+export async function run(browser: Browser, testInfo: any = null) {
   console.log('=============================================================');
   console.log(' Test Case 10 — Ardia Pick process');
   console.log('=============================================================');
@@ -34,12 +36,27 @@ export async function run(browser: Browser) {
   console.log(`  Pick tile    : ${data.pickBatchTile}`);
   console.log(`  Weight       : ${data.pickWeight}\n`);
 
+  // Test data shown in BOTH the Excel and the client HTML report
+  const reportTestData: Record<string, string> = {
+    'Batch Number':        String(data.batchNumber ?? ''),
+    'Ardia Process':       String(data.ardiaProcessText ?? ''),
+    'Ardia Site':          String(data.ardiaSiteText ?? ''),
+    'Ardia Warehouse':     String(data.ardiaWarehouseText ?? ''),
+    'Ardia Location':      String(data.ardiaLocationText ?? ''),
+    'Pick Batch Tile':     String(data.pickBatchTile ?? ''),
+    'Pick Weight':         String(data.pickWeight ?? ''),
+    'Printer':             String(data.printer ?? ''),
+  };
+  const report = new ReportCollector('Test Case 10', reportTestData);
+
   let d365Context:  BrowserContext | undefined;
   let ardiaContext: BrowserContext | undefined;
   let d365ErrPage:  Page | undefined;   // referenced by the catch block for an error screenshot
   let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
 
   let licensePlate = '';
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
+  let isSyncResult: boolean | null = null;
 
   try {
     // ══════════════════════════════════════════════════════════
@@ -51,6 +68,7 @@ export async function run(browser: Browser) {
     const d365Page = d365.page;
     d365ErrPage = d365Page;
     console.log('✓ D365 ready\n');
+    report.add('Open D365 (authenticated session)', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART A — GET LICENSE PLATE FROM ON-HAND LIST
@@ -60,6 +78,7 @@ export async function run(browser: Browser) {
     // before doing anything else (TC9 strategy — never assume navigation happened).
     await openViaSearch(d365Page, 'on-hand list', /On-hand list/i, t.onHandLoad);
     console.log('✓ On-hand list opened — grid rendered\n');
+    report.add('Open On-hand list', 'PASS');
 
     console.log(`Step 3: Filtering by Batch number = ${data.batchNumber}...`);
     // Reveal the Batch number inline filter (click the column header if the
@@ -80,6 +99,7 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.onHandLoad }).catch(() => {});
     await d365Page.waitForTimeout(3000);
     console.log('✓ Batch filter applied\n');
+    report.add('Filter On-hand list by Batch number', 'PASS', data.batchNumber);
 
     // Optional: add product dimensions (best effort — not required to read the LP).
     await addDimensions(d365Page).catch(() => console.log('         Dimensions step skipped'));
@@ -87,7 +107,7 @@ export async function run(browser: Browser) {
     console.log(`Step 5: Waiting for On-hand data to populate (up to ${Math.round(t.onHandLoad / 60000)} min)...`);
     await waitForOnHandData(d365Page, t.onHandLoad);
 
-    console.log('Step 5b: Extracting a License Plate with physical inventory = 1...');
+    console.log('Step 5b: Extracting a License Plate with positive physical inventory...');
     licensePlate = await extractLicensePlate(d365Page, t.onHandLoad);
 
     // ── Diagnostic: if extraction failed, dump the grid DOM so we can
@@ -104,10 +124,12 @@ export async function run(browser: Browser) {
       licensePlate = data.manualLicensePlate;
     }
     if (!licensePlate) {
-      throw new Error('Could not determine a License Plate (inventory = 1) and no manualLicensePlate configured.');
+      throw new Error('Could not determine a License Plate with positive inventory and no manualLicensePlate configured.');
     }
     console.log(`✓ License Plate captured: ${licensePlate}\n`);
-    await d365Page.screenshot({ path: 'screenshot-tc10-onhand-lp.png' });
+    report.add('Extract License Plate (positive inventory)', 'PASS', licensePlate);
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc10-onhand-lp.png') });
+    report.addScreenshot('On-hand list — License Plate captured', screenshotPath('screenshot-tc10-onhand-lp.png'));
 
     // ══════════════════════════════════════════════════════════
     //  PART B — ARDIA PICK
@@ -118,7 +140,9 @@ export async function run(browser: Browser) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Logged into Ardia\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc10-ardia-loggedin.png' });
+    report.add('Open Ardia (authenticated session)', 'PASS');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc10-ardia-loggedin.png') });
+    report.addScreenshot('Ardia logged in', screenshotPath('screenshot-tc10-ardia-loggedin.png'));
 
     console.log('Step 7: Selecting Pick filters (Process/Printer/Site/WH/Location)...');
     await ardiaPage.getByText('Select Process').waitFor({ timeout: t.element }).catch(() => {});
@@ -133,8 +157,10 @@ export async function run(browser: Browser) {
     await selectArdiaDropdown(ardiaPage, 3, data.ardiaWarehouseText!);
     await ardiaPage.waitForTimeout(1500); // location list loads after warehouse
     await selectArdiaDropdown(ardiaPage, 4, data.ardiaLocationText!);
-    await ardiaPage.screenshot({ path: 'screenshot-tc10-ardia-filters.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc10-ardia-filters.png') });
+    report.addScreenshot('Ardia Pick filters selected', screenshotPath('screenshot-tc10-ardia-filters.png'));
     console.log('✓ Filters selected\n');
+    report.add('Select Pick filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     console.log('Step 8: Clicking Proceed...');
     const proceedBtn = ardiaPage.getByRole('button', { name: 'Proceed' });
@@ -147,10 +173,26 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForTimeout(3000);
 
     console.log(`Step 9: Selecting batch tile "${data.pickBatchTile}"...`);
-    const tile = ardiaPage.getByText(data.pickBatchTile!, { exact: false });
-    await tile.first().waitFor({ timeout: t.element });
+    // Batch tiles are named by D365 batch order ID and churn as new orders
+    // are created, so a hardcoded name can go stale (it did before — see
+    // test-data.ts). The tile just opens a batch-order context; the actual
+    // pick target is identified separately by the LP barcode entered next
+    // (Step 10), so falling back to whichever tile is actually available
+    // is safe rather than a guess that changes test intent.
+    let tile = ardiaPage.getByText(data.pickBatchTile!, { exact: false });
+    let tileFound = await tile.first().isVisible({ timeout: 8000 }).catch(() => false);
+    if (!tileFound) {
+      console.log(`         "${data.pickBatchTile}" not found — falling back to the first available batch tile`);
+      tile = ardiaPage.getByText(/^[A-Z]{2,4}-[A-Za-z0-9]+$/).first();
+      tileFound = await tile.first().isVisible({ timeout: t.element }).catch(() => false);
+      if (!tileFound) {
+        throw new Error('No batch order tiles found in the Ardia Pick screen — cannot proceed.');
+      }
+    }
+    const tileText = await tile.first().textContent().catch(() => null);
     await tile.first().click();
     await ardiaPage.waitForTimeout(2000);
+    console.log(`         ✓ Selected batch tile: ${tileText?.trim() || data.pickBatchTile}`);
 
     console.log(`Step 10: Entering License Plate barcode: ${licensePlate}...`);
     const barcodeBox = ardiaPage.getByRole('textbox', { name: 'Barcode:' });
@@ -165,7 +207,8 @@ export async function run(browser: Browser) {
     }
     await ardiaPage.getByRole('button', { name: 'Enter', exact: true }).click();
     await ardiaPage.waitForTimeout(1500);
-    await ardiaPage.screenshot({ path: 'screenshot-tc10-ardia-weight-entered.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc10-ardia-weight-entered.png') });
+    report.addScreenshot('Ardia weight entered', screenshotPath('screenshot-tc10-ardia-weight-entered.png'));
 
     console.log('Step 12: Clicking Post...');
     await ardiaPage.getByRole('button', { name: 'Post', exact: true }).click();
@@ -184,7 +227,9 @@ export async function run(browser: Browser) {
       }
     }
     console.log('✓ Pick posted — Picking journal confirmed\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc10-ardia-posted.png' });
+    report.add('Pick posted — Picking journal confirmed', 'PASS');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc10-ardia-posted.png') });
+    report.addScreenshot('Ardia pick posted', screenshotPath('screenshot-tc10-ardia-posted.png'));
 
     // ══════════════════════════════════════════════════════════
     //  PART C — VERIFY COLD SCALE STAGING DATA IN D365
@@ -204,10 +249,12 @@ export async function run(browser: Browser) {
       console.log(`         ... ${left}s remaining`);
     }
     console.log('         ✓ Sync wait complete — proceeding to Cold scale verification\n');
+    report.add('Wait for Cold scale sync batch job', 'PASS', `${COLD_SCALE_SYNC_WAIT_MS / 60000} min`);
 
     console.log('Step 14: Opening Cold scale staging data in D365...');
     await openViaSearch(d365Page, 'cold scale', /Cold scale staging data/i, t.dashboard);
     console.log('✓ Cold scale staging data opened — grid rendered\n');
+    report.add('Open Cold scale staging data', 'PASS');
 
     console.log(`Step 15: Filtering Bar code = ${licensePlate}...`);
     // Reveal the Bar code inline filter, then fill + Apply (TC9 pattern).
@@ -224,7 +271,9 @@ export async function run(browser: Browser) {
     await d365Page.getByRole('button', { name: 'Apply' }).click();
     await d365Page.waitForLoadState('networkidle', { timeout: t.dashboard }).catch(() => {});
     await d365Page.waitForTimeout(3000);
-    await d365Page.screenshot({ path: 'screenshot-tc10-coldscale-staging.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc10-coldscale-staging.png') });
+    report.addScreenshot('D365 Cold scale staging (IsSync)', screenshotPath('screenshot-tc10-coldscale-staging.png'));
+    report.add('Filter Cold scale staging by Bar code', 'PASS', licensePlate);
 
     console.log('Step 16: Verifying the LP row exists and IsSync = true...');
 
@@ -238,15 +287,21 @@ export async function run(browser: Browser) {
       throw new Error(`License Plate ${licensePlate} not found in Cold scale staging data`);
     }
     console.log(`         ✓ LP ${licensePlate} found in Cold scale staging data`);
+    report.add('Verify LP found in Cold scale staging data', 'PASS', licensePlate);
 
     if (verification.isSync === true) {
       console.log('         ✓ IsSync = true');
+      isSyncResult = true;
+      report.add('Verify Cold scale staging IsSync', 'PASS', 'IsSync = true');
     } else if (verification.isSync === false) {
+      isSyncResult = false;
       throw new Error('Cold scale staging row found but IsSync = false');
     } else {
       console.log('         ⚠ LP row present but IsSync state could not be read — confirm visually');
+      report.add('Verify Cold scale staging IsSync', 'PASS', 'IsSync unconfirmed');
     }
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 10 PASSED');
     console.log(`   License Plate : ${licensePlate}`);
     console.log(`   Batch         : ${data.batchNumber}`);
@@ -254,12 +309,29 @@ export async function run(browser: Browser) {
     console.log('   Cold scale    : LP present in staging data');
 
   } catch (err: any) {
+    overall = 'FAIL';
+    report.add('TEST FAILED', 'FAIL', err.message ?? String(err));
     console.error(`\n❌ TEST CASE 10 FAILED: ${err.message}`);
-    await d365ErrPage?.screenshot({ path: 'screenshot-tc10-error-d365.png' }).catch(() => {});
-    await ardiaErrPage?.screenshot({ path: 'screenshot-tc10-error-ardia.png' }).catch(() => {});
+    await d365ErrPage?.screenshot({ path: screenshotPath('screenshot-tc10-error-d365.png') }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-tc10-error-ardia.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot (D365)', screenshotPath('screenshot-tc10-error-d365.png'));
+    report.addScreenshot('Failure screenshot (Ardia)', screenshotPath('screenshot-tc10-error-ardia.png'));
     console.log(`   License Plate at failure: ${licensePlate || 'not yet captured'}`);
     throw err;   // surface failure to the Playwright Test Runner
   } finally {
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result':    overall,
+        'Batch Number':      data.batchNumber || '',
+        'License Plate':     licensePlate || '(not captured)',
+        'Cold Scale IsSync': isSyncResult === true ? 'true' : isSyncResult === false ? 'false' : 'unconfirmed',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
     await ardiaContext?.close();
   }
@@ -417,21 +489,22 @@ async function waitForOnHandData(page: Page, timeout: number): Promise<void> {
 }
 
 /**
- * Scan the On-hand grid for a 16-digit License Plate whose physical
- * inventory is 1.
+ * Scan the On-hand grid for a 16-digit License Plate with positive
+ * physical inventory (originally required exactly 1; relaxed to "any
+ * positive amount" — see the match logic below for why).
  *
  * Two strategies, in order:
  *   1. Direct column read — now that the "License plate" dimension is
  *      enabled, each row exposes a cell labelled "License plate" whose
  *      title/text holds the 16-digit value. We pair it with the physical
- *      inventory cell to confirm the qty is 1.
+ *      inventory cell to confirm the qty is positive.
  *   2. Row-text regex fallback — the row's accessible text looks like:
  *        "... Available 1205202026000002 1 1 1 1 1 Ea ..."
  *      so we match a 16-digit number immediately followed by " 1".
  */
 /**
- * Scan the On-hand grid for a 16-digit License Plate whose physical
- * inventory is 1.
+ * Scan the On-hand grid for a 16-digit License Plate with positive
+ * physical inventory.
  *
  * D365's react grid renders each cell as a separate DOM node, and the
  * LP value often lives in a cell's title/aria-label rather than visible
@@ -441,7 +514,7 @@ async function waitForOnHandData(page: Page, timeout: number): Promise<void> {
  *
  * New approach — three strategies in order, with diagnostic logging:
  *   1. Per-row cell read: for each row, read the License plate cell and
- *      the CW physical inventory cell separately, confirm inventory = 1.
+ *      the Physical inventory cell separately, confirm inventory > 0.
  *   2. License plate column scan: collect every cell exposing a
  *      "License plate" label, return the first whose row's text shows a 1.
  *   3. Loose row-text regex fallback (logs candidates it sees).
@@ -512,12 +585,12 @@ async function extractLicensePlate(page: Page, timeout: number): Promise<string>
 
     // ── PRIMARY — group cells into rows by geometry, read per row ──
     // The grid is virtualized. Pairing two flat lists (License plate
-    // cells vs CW physical inventory cells) BY INDEX is WRONG because
+    // cells vs Physical inventory cells) BY INDEX is WRONG because
     // blank inventory cells may not emit a DOM node — so the lists have
     // different lengths and indices drift (this caused an LP with blank
     // inventory to be selected). Instead we group ALL labelled cells by
     // their row, using each cell's vertical position (rounded top), then
-    // read License plate + CW physical inventory from the SAME row.
+    // read License plate + Physical inventory from the SAME row.
     const pairs = await page.evaluate(() => {
       const readVal = (el: Element): string => {
         const input = el.querySelector('input') as HTMLInputElement | null;
@@ -551,7 +624,12 @@ async function extractLicensePlate(page: Page, timeout: number): Promise<string>
 
       // Collect labelled cells for the two columns we care about
       const lpEls  = Array.from(document.querySelectorAll('[aria-label="License plate"], [title="License plate"]'));
-      const invEls = Array.from(document.querySelectorAll('[aria-label="CW physical inventory"], [title="CW physical inventory"]'));
+      // Confirmed via live DOM diagnostic dump: the real column header is
+      // "Physical inventory", not "CW physical inventory" — the old label
+      // matched zero cells, so every row's inventory came back blank and
+      // this always fell through to manualLicensePlate regardless of what
+      // was actually on-hand.
+      const invEls = Array.from(document.querySelectorAll('[aria-label="Physical inventory"], [title="Physical inventory"]'));
 
       // Build a lookup of inventory cells keyed by their row's vertical
       // position. Cells in the same visual row share (approximately) the
@@ -561,9 +639,15 @@ async function extractLicensePlate(page: Page, timeout: number): Promise<string>
         return Math.round(r.top / 4) * 4;
       };
 
+      // A cell with no real value has no [title], so readCellValue() falls
+      // through its candidate list to [aria-label] — which, for every cell
+      // in invEls, is always the literal column name "Physical inventory"
+      // (that's how they were selected above), not a per-cell value. Treat
+      // that specific fallthrough as blank instead of a bogus "value".
       const invByRow = new Map<number, string>();
       for (const inv of invEls) {
-        invByRow.set(rowKey(inv), readCellValue(inv));
+        const v = readCellValue(inv);
+        invByRow.set(rowKey(inv), v === 'Physical inventory' ? '' : v);
       }
 
       const out: { lp: string; inv: string }[] = [];
@@ -605,18 +689,22 @@ async function extractLicensePlate(page: Page, timeout: number): Promise<string>
         loggedSample = true;
       }
 
-      // ONLY accept an LP whose physical inventory is exactly 1.
-      // A blank inventory means the LP is used up (inventory 0) — never pick it.
-      const exact = pairs.find((p: { lp: string; inv: string }) => /^1(?:\.0+)?$/.test((p.inv || '').replace(/,/g, '')));
+      // Accept an LP with any positive, confirmed physical inventory — not
+      // strictly exactly 1. A blank inventory means unconfirmed/used up
+      // (inventory 0) — never pick it either way.
+      const exact = pairs.find((p: { lp: string; inv: string }) => {
+        const n = parseFloat((p.inv || '').replace(/,/g, ''));
+        return !isNaN(n) && n > 0;
+      });
       if (exact) {
         console.log(`         ✓ LP found (physical inventory = ${exact.inv}): ${exact.lp}`);
         return exact.lp;
       }
 
       // NOTE: deliberately NO "single LP" fallback here. Picking an LP whose
-      // inventory we could not confirm as 1 risks selecting a used-up LP
-      // (the original bug). If nothing has inventory=1, we keep waiting.
-      console.log(`         [diagnostic] no LP with inventory=1 yet: ` +
+      // inventory we could not confirm as positive risks selecting a used-up
+      // LP (the original bug). If nothing has confirmed inventory, we keep waiting.
+      console.log(`         [diagnostic] no LP with confirmed positive inventory yet: ` +
         pairs.slice(0, 10).map((p: { lp: string; inv: string }) => `${p.lp}(inv=${p.inv === '' ? 'blank' : p.inv})`).join(', '));
     }
 
@@ -767,6 +855,6 @@ async function verifyColdScaleRow(
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }

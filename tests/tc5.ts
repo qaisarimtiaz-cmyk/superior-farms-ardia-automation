@@ -13,11 +13,41 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { config }   from '../config';
 import { testData } from '../test-data';
 import { openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
+import { screenshotPath } from '../utils/run-folder';
 
 const data = testData.TC05;
 const t    = config.timeouts;
 
-export async function run(browser: Browser) {
+/** Scroll the open Ardia dropdown container until `optionText` becomes visible.
+ *  Ardia renders option rows as plain divs (not a virtual-scroll viewport), so
+ *  we bump scrollTop incrementally and re-check — a fixed one-shot scroll +
+ *  hardcoded item index breaks whenever the target isn't at that exact index.
+ *  Ported from the proven implementation in tc12.ts / tc10.ts / tc3.ts. */
+async function scrollArdiaDropdownUntilVisible(page: Page, optionText: string): Promise<void> {
+  await page.waitForTimeout(400); // let the dropdown finish opening
+  const maxScrolls = 30;
+  const container = page
+    .locator('app-input-grid-select > div:nth-child(2), div.dropdownContainer')
+    .last();
+
+  for (let i = 0; i < maxScrolls; i++) {
+    const option = page.getByText(optionText, { exact: false }).first();
+    if (await option.isVisible({ timeout: 400 }).catch(() => false)) {
+      if (i > 0) console.log(`         (found "${optionText}" after ${i} scroll(s))`);
+      return;
+    }
+    const scrolled = await container
+      .evaluate((el: Element) => { (el as HTMLElement).scrollTop += 150; return true; })
+      .catch(() => false);
+    if (!scrolled) {
+      await page.keyboard.press('ArrowDown'); // fallback if container not found
+    }
+    await page.waitForTimeout(200);
+  }
+}
+
+export async function run(browser: Browser, testInfo: any = null) {
 
   console.log('=============================================================');
   console.log(' Test Case 5 — Ardia Produce → Reprint/Reversal Label');
@@ -25,8 +55,23 @@ export async function run(browser: Browser) {
   console.log(`  Process: Produce`);
   console.log(`  Printer: ${data.printer}\n`);
 
+  // Test data shown in BOTH the Excel and the client HTML report
+  const reportTestData: Record<string, string> = {
+    'Item Number':   String(data.itemNumber ?? ''),
+    'Configuration': String(data.configuration ?? ''),
+    'Site':          String(data.site ?? ''),
+    'Warehouse':     String(data.warehouse ?? ''),
+    'Location':      String(data.location ?? ''),
+    'Quantity':      String(data.quantity ?? ''),
+    'Printer':       String(data.printer ?? ''),
+    'Process':       'Produce',
+  };
+  const report = new ReportCollector('Test Case 5', reportTestData);
+
   let ardiaContext: BrowserContext | undefined;
   let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
+  let tagTextResult = '';
 
   try {
 
@@ -40,7 +85,9 @@ export async function run(browser: Browser) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Ardia ready\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-ardia-loggedin.png' });
+    report.add('Open Ardia (authenticated session)', 'PASS');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-ardia-loggedin.png') });
+    report.addScreenshot('Ardia logged in', screenshotPath('screenshot-tc5-ardia-loggedin.png'));
 
 
     // ══════════════════════════════════════════════════════════
@@ -74,18 +121,16 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForTimeout(1500);
     console.log(`         ✓ Site selected: ${data.site}`);
 
-    console.log('Step 8: Selecting Warehouse...');
+    console.log(`Step 8: Selecting Warehouse = "${data.warehouseDisplayText || data.warehouse}"...`);
     await ardiaPage.locator('div:nth-of-type(4) textarea').click();
     await ardiaPage.waitForTimeout(800);
-    // Scroll and select warehouse
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]')
-      .evaluate((el: Element) => { el.scrollTop = 1000; });
-    await ardiaPage.waitForTimeout(500);
-    await ardiaPage.locator('div:nth-of-type(4) textarea').click();
-    await ardiaPage.waitForTimeout(500);
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]/div[25]/div').click();
+    // Scroll incrementally and match by visible text instead of a hardcoded
+    // item index — the index-based approach broke whenever the warehouse
+    // wasn't at the assumed position. Same fix already proven in TC3/TC10/TC12.
+    await scrollArdiaDropdownUntilVisible(ardiaPage, data.warehouseDisplayText || data.warehouse);
+    await ardiaPage.getByText(data.warehouseDisplayText || data.warehouse, { exact: !!data.warehouseDisplayText }).first().click();
     await ardiaPage.waitForTimeout(1500);
-    console.log(`         ✓ Warehouse selected: ${data.warehouse}`);
+    console.log(`         ✓ Warehouse selected: ${data.warehouseDisplayText || data.warehouse}`);
 
     console.log('Step 9: Selecting Location...');
     await ardiaPage.locator('div:nth-of-type(5) textarea').click();
@@ -94,14 +139,18 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForTimeout(800);
     console.log(`         ✓ Location selected: ${data.location}`);
 
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-filters-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-filters-selected.png') });
+    report.addScreenshot('Ardia filters selected', screenshotPath('screenshot-tc5-filters-selected.png'));
+    report.add('Select Ardia filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     console.log('Step 10: Clicking Proceed...');
     await ardiaPage.locator('div:nth-of-type(6) > button').click();
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(3000);
     console.log('✓ Proceeded to Produce page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-produce-page.png' });
+    report.add('Proceed to Produce page', 'PASS');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-produce-page.png') });
+    report.addScreenshot('Produce page', screenshotPath('screenshot-tc5-produce-page.png'));
 
 
     // ══════════════════════════════════════════════════════════
@@ -117,6 +166,7 @@ export async function run(browser: Browser) {
     await reprintButton.click();
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Clicked Reprint/Reversal\n');
+    report.add('Click Reprint/Reversal button', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -127,7 +177,9 @@ export async function run(browser: Browser) {
     const reprintHeading = ardiaPage.getByRole('heading', { name: 'Reprint & Reversal Label' });
     await reprintHeading.waitFor({ timeout: t.element });
     console.log('         ✓ Confirmed on Reprint & Reversal Label page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-reprint-page.png' });
+    report.add('Validate Reprint & Reversal Label page', 'PASS');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-reprint-page.png') });
+    report.addScreenshot('Reprint & Reversal Label page', screenshotPath('screenshot-tc5-reprint-page.png'));
 
 
     // ══════════════════════════════════════════════════════════
@@ -139,13 +191,16 @@ export async function run(browser: Browser) {
     const tagTile = ardiaPage.locator('text=/- \\d+\\.\\d+ lb\\(s\\)/').first();
     await tagTile.waitFor({ timeout: t.element });
     const tagText = await tagTile.textContent();
+    tagTextResult = tagText ?? '';
     console.log(`         ✓ Found first tag tile: ${tagText}`);
 
     console.log('Step 15: Clicking on the first tag tile...');
     await tagTile.click();
     await ardiaPage.waitForTimeout(1500);
     console.log('         ✓ Tag tile selected\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-tag-selected.png' });
+    report.add('Select first tag tile', 'PASS', tagText ?? '');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-tag-selected.png') });
+    report.addScreenshot('Tag tile selected', screenshotPath('screenshot-tc5-tag-selected.png'));
 
 
     // ══════════════════════════════════════════════════════════
@@ -182,7 +237,9 @@ export async function run(browser: Browser) {
       if (responseBody) {
         console.log(`           Response: ${JSON.stringify(responseBody).substring(0, 100)}...`);
       }
+      report.add('Save & verify barcodereprint API (POST)', 'PASS', 'barcodereprint POST → 200 OK');
     } catch (err: any) {
+      report.add('Save & verify barcodereprint API (POST)', 'FAIL', err.message);
       throw new Error(
         `barcodereprint API verification failed: ${err.message}\n` +
         `Expected POST to https://10.164.2.92:812/barcodereprint with status 200`
@@ -190,14 +247,17 @@ export async function run(browser: Browser) {
     }
 
     await ardiaPage.waitForTimeout(2000);
-    await ardiaPage.screenshot({ path: 'screenshot-tc5-after-save.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc5-after-save.png') });
+    report.addScreenshot('After save', screenshotPath('screenshot-tc5-after-save.png'));
     console.log('         ✓ Save completed successfully\n');
+    report.add('Save completed successfully', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
     //  SUMMARY
     // ══════════════════════════════════════════════════════════
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 5 PASSED');
     console.log(`   Process: Produce`);
     console.log(`   Tag Selected: ${tagText}`);
@@ -210,12 +270,27 @@ export async function run(browser: Browser) {
     console.log('     screenshot-tc5-after-save.png');
 
   } catch (err: any) {
+    report.add('TEST FAILED', 'FAIL', err.message ?? String(err));
     console.error(`\n❌ TEST CASE 5 FAILED: ${err.message}`);
-    await ardiaErrPage?.screenshot({ path: 'screenshot-tc5-error.png' }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-tc5-error.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot', screenshotPath('screenshot-tc5-error.png'));
     console.log('   Error screenshot saved:');
     console.log('     screenshot-tc5-error.png');
     throw err;   // surface failure to the Playwright Test Runner
   } finally {
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result': overall,
+        'Process':        'Produce',
+        'Tag Selected':   tagTextResult || '(not selected)',
+        'Printer':        data.printer,
+        'barcodereprint API': 'POST /barcodereprint → 200 OK',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
     await ardiaContext?.close();
   }
 }
@@ -224,6 +299,6 @@ export async function run(browser: Browser) {
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }

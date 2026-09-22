@@ -19,10 +19,12 @@ import { config }   from '../config';
 import { testData } from '../test-data';
 import { readSharedState } from '../utils/shared-state';   // ← reads from TC1
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
+import { screenshotPath } from '../utils/run-folder';
 import * as readline from 'readline';
 
-const data = testData.TC01;
-const t    = config.timeouts;
+const data    = testData.TC01;
+const t       = config.timeouts;
 const tc04Data = testData.TC04;
 
 // ── Helper function to prompt user for input ───────────────────
@@ -39,23 +41,23 @@ function promptUser(question: string): Promise<string> {
   });
 }
 
-export async function run(browser: Browser) {
+export async function run(browser: Browser, testInfo: any = null) {
 
   // ── Try to read batch order ID from TC1, or prompt for manual barcode ──
-  let batchOrderId = '';
-  let firstBarcode = '';
+  let batchOrderId     = '';
+  let firstBarcode     = '';
   let useManualBarcode = false;
 
   try {
-    const state = readSharedState();
+    const state = readSharedState('TC01');
     batchOrderId = state.batchOrderId;
     console.log('   ✓ TC1 shared state found — will extract barcode from D365\n');
   } catch (err) {
     console.log('\n   ⚠  TC1 shared state not found (TC1 may have failed)\n');
-    
+
     if (tc04Data?.fallbackBarcode) {
       console.log('   ✓ Using fallback barcode from test-data.ts\n');
-      firstBarcode = tc04Data.fallbackBarcode;
+      firstBarcode     = tc04Data.fallbackBarcode;
       useManualBarcode = true;
     } else {
       console.log('   ⚠  No fallback barcode configured in test-data.ts\n');
@@ -73,6 +75,18 @@ export async function run(browser: Browser) {
     }
   }
 
+  const reportTestData: Record<string, string> = {
+    'Item Number':   String(data.itemNumber ?? ''),
+    'Configuration': String(data.configuration ?? ''),
+    'Site':          String(data.site ?? ''),
+    'Warehouse':     String(data.warehouse ?? ''),
+    'Location':      String(data.location ?? ''),
+    'Batch Order':   batchOrderId || '(manual barcode)',
+    'Barcode Source': useManualBarcode ? 'Manual / Fallback' : 'TC1 D365 RAF Staging',
+    'Process':       'Conversions',
+  };
+  const report = new ReportCollector('Test Case 4', reportTestData);
+
   console.log('=============================================================');
   console.log(' Test Case 4 — RAF Staging Barcode → Ardia Conversions');
   console.log('=============================================================');
@@ -84,8 +98,10 @@ export async function run(browser: Browser) {
 
   let d365Context:  BrowserContext | undefined;
   let ardiaContext: BrowserContext | undefined;
-  let d365Page:     Page | undefined;   // referenced by the catch block for an error screenshot
-  let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
+  let d365Page:     Page | undefined;
+  let ardiaErrPage: Page | undefined;
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
+  let deferredError: any = null;
 
   try {
 
@@ -97,13 +113,13 @@ export async function run(browser: Browser) {
       console.log('Step 1: Opening D365 (authenticated session)...');
       const d365 = await openAuthedD365(browser);
       d365Context = d365.context;
-      d365Page = d365.page;
+      d365Page    = d365.page;
       console.log('✓ D365 ready\n');
+      report.add('Open D365 (authenticated session)', 'PASS');
 
 
       // ══════════════════════════════════════════════════════════
       //  PART 2 — NAVIGATE TO "REPORT AS FINISHED STAGING DATA"
-      //  Locators from Playwright codegen
       // ══════════════════════════════════════════════════════════
 
       console.log('Step 6: Clicking the Search button on the D365 dashboard...');
@@ -123,10 +139,15 @@ export async function run(browser: Browser) {
       await d365Page.waitForTimeout(2000);
 
       console.log('Step 9: Confirming redirect to RAF form URL...');
-      const rafUrl = 'https://sf-f3-d365-test-723aae8f7890958cedevaos.axcloud.dynamics.com/?cmp=THCI&mi=F3ProdAppRAFProcessForm';
-      await d365Page.waitForURL(rafUrl, { timeout: t.navigation });
+      // Match by query params only (wildcard), not a hardcoded domain — the
+      // literal UAT sandbox URL here broke as soon as .env pointed at a
+      // different D365 environment. Same pattern already proven reliable
+      // in auth-flows.ts's login URL check.
+      await d365Page.waitForURL('**cmp=THCI&mi=F3ProdAppRAFProcessForm**', { timeout: t.navigation });
       console.log('✓ Confirmed on Report as finished staging data form\n');
-      await d365Page.screenshot({ path: 'screenshot-tc4-raf-staging-form.png' });
+      await d365Page.screenshot({ path: screenshotPath('screenshot-tc4-raf-staging-form.png') });
+      report.addScreenshot('D365 RAF Staging form', screenshotPath('screenshot-tc4-raf-staging-form.png'));
+      report.add('Navigate to RAF Staging Data in D365', 'PASS');
 
 
       // ══════════════════════════════════════════════════════════
@@ -150,13 +171,13 @@ export async function run(browser: Browser) {
       await d365Page.waitForLoadState('networkidle', { timeout: t.navigation });
       await d365Page.waitForTimeout(2000);
       console.log(`✓ Filter applied — showing results for batch order "${batchOrderId}"\n`);
-      await d365Page.screenshot({ path: 'screenshot-tc4-raf-filtered.png' });
+      await d365Page.screenshot({ path: screenshotPath('screenshot-tc4-raf-filtered.png') });
+      report.addScreenshot('RAF Staging filtered by batch order', screenshotPath('screenshot-tc4-raf-filtered.png'));
+      report.add(`Filter RAF Staging by Batch Order (${batchOrderId})`, 'PASS', batchOrderId);
 
 
       // ══════════════════════════════════════════════════════════
       //  PART 4 — LOCATE THE BARCODE COLUMN AND COPY FIRST VALUE
-      //  The barcode format is: (01)XXXXXX(3202)XXXXXX(11)XXXXXX(21)XXXXXX
-      //  It is read from the title attribute of the first barcode cell.
       // ══════════════════════════════════════════════════════════
 
       console.log('Step 13: Locating the Barcode column in the results grid...');
@@ -164,12 +185,9 @@ export async function run(browser: Browser) {
       console.log('         ✓ Barcode column found');
 
       console.log('Step 14: Reading the first barcode value from the grid...');
-      // The barcode is stored in the title attribute of the first data cell
-      // under the Barcode column. We grab the first matching cell title.
       const barcodeCell = d365Page.locator('[title*="(01)"]').first();
       await barcodeCell.waitFor({ timeout: t.element });
 
-      // title holds the full barcode string e.g. (01)90717497100436(3202)004688(11)260305(21)0603785481
       firstBarcode = (await barcodeCell.getAttribute('title') ?? '').trim();
 
       if (!firstBarcode) {
@@ -180,14 +198,18 @@ export async function run(browser: Browser) {
       }
 
       console.log(`         ✓ Barcode captured: ${firstBarcode}\n`);
-      await d365Page.screenshot({ path: 'screenshot-tc4-barcode-captured.png' });
+      await d365Page.screenshot({ path: screenshotPath('screenshot-tc4-barcode-captured.png') });
+      report.addScreenshot('Barcode captured from grid', screenshotPath('screenshot-tc4-barcode-captured.png'));
+      report.add('Extract Barcode from RAF Staging grid', 'PASS', firstBarcode);
+
     } else {
-      console.log('Step 1-14: Skipping D365 steps (using manual barcode)\n');
+      console.log('Step 1-14: Skipping D365 steps (using manual/fallback barcode)\n');
+      report.add('D365 Extraction', 'INFO', `Skipped — using barcode: ${firstBarcode}`);
     }
 
 
     // ══════════════════════════════════════════════════════════
-    //  PART 5 — OPEN ARDIA (reuses saved session; logs in if needed)
+    //  PART 5 — OPEN ARDIA
     // ══════════════════════════════════════════════════════════
 
     console.log('Step 15: Opening Ardia (authenticated session)...');
@@ -196,11 +218,12 @@ export async function run(browser: Browser) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Ardia ready\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc4-ardia-loggedin.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc4-ardia-loggedin.png') });
+    report.add('Open Ardia (authenticated session)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
-    //  PART 7 — ARDIA BATCH FILTERS: OPEN FIRST DROPDOWN
+    //  PART 7 — ARDIA BATCH FILTERS
     // ══════════════════════════════════════════════════════════
 
     console.log('Step 17: Waiting for Ardia batch-filters page...');
@@ -219,7 +242,9 @@ export async function run(browser: Browser) {
     ).click();
     await ardiaPage.waitForTimeout(800);
     console.log('         ✓ Dropdown option selected\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc4-ardia-filter-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc4-ardia-filter-selected.png') });
+    report.addScreenshot('Ardia filter selected', screenshotPath('screenshot-tc4-ardia-filter-selected.png'));
+    report.add('Select Ardia Process filter', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -233,7 +258,9 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(3000);
     console.log('✓ Proceeded past the filter page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc4-ardia-after-proceed.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc4-ardia-after-proceed.png') });
+    report.addScreenshot('Ardia after Proceed', screenshotPath('screenshot-tc4-ardia-after-proceed.png'));
+    report.add('Proceed to Ardia Conversions page', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -249,49 +276,58 @@ export async function run(browser: Browser) {
     await ardiaPage.keyboard.press('Enter');
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Barcode entered and submitted\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc4-barcode-entered.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc4-barcode-entered.png') });
+    report.addScreenshot('Barcode entered in Ardia Conversions', screenshotPath('screenshot-tc4-barcode-entered.png'));
+    report.add('Enter Barcode in Ardia Conversions', 'PASS', firstBarcode);
 
 
     // ══════════════════════════════════════════════════════════
     //  SUMMARY
     // ══════════════════════════════════════════════════════════
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 4 PASSED');
     console.log(`   Batch Order: ${batchOrderId || '(manual barcode used)'}`);
-    console.log(`   Barcode: ${firstBarcode}`);
-    console.log(`   Source: ${useManualBarcode ? 'Manual Input' : 'TC1 (D365 RAF Staging)'}`);
-    console.log('   Screenshots:');
-    if (!useManualBarcode) {
-      console.log('     screenshot-tc4-raf-staging-form.png');
-      console.log('     screenshot-tc4-raf-filtered.png');
-      console.log('     screenshot-tc4-barcode-captured.png');
-    }
-    console.log('     screenshot-tc4-ardia-loggedin.png');
-    console.log('     screenshot-tc4-ardia-filter-selected.png');
-    console.log('     screenshot-tc4-ardia-after-proceed.png');
-    console.log('     screenshot-tc4-barcode-entered.png');
+    console.log(`   Barcode:     ${firstBarcode}`);
+    console.log(`   Source:      ${useManualBarcode ? 'Manual Input' : 'TC1 (D365 RAF Staging)'}`);
 
   } catch (err: any) {
+    overall = 'FAIL';
     console.error(`\n❌ TEST CASE 4 FAILED: ${err.message}`);
-    await d365Page?.screenshot({ path: 'screenshot-tc4-error-d365.png' }).catch(() => {});
-    await ardiaErrPage?.screenshot({ path: 'screenshot-tc4-error-ardia.png' }).catch(() => {});
-    console.log('   Error screenshots saved:');
-    console.log('     screenshot-tc4-error-d365.png');
-    console.log('     screenshot-tc4-error-ardia.png');
+    report.add('TEST FAILED', 'FAIL', err.message);
+    await d365Page?.screenshot({ path: screenshotPath('screenshot-tc4-error-d365.png') }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-tc4-error-ardia.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot (D365)', screenshotPath('screenshot-tc4-error-d365.png'));
+    report.addScreenshot('Failure screenshot (Ardia)', screenshotPath('screenshot-tc4-error-ardia.png'));
     console.log(`   Batch Order: ${batchOrderId || '(manual barcode used)'}`);
-    console.log(`   Barcode: ${firstBarcode || 'not yet captured'}`);
-    console.log(`   Source: ${useManualBarcode ? 'Manual Input' : 'TC1 (D365 RAF Staging)'}`);
-    throw err;   // surface failure to the Playwright Test Runner
+    console.log(`   Barcode:     ${firstBarcode || 'not yet captured'}`);
+    deferredError = err;
   } finally {
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result': overall,
+        'Batch Order ID': batchOrderId || '(manual barcode)',
+        'Barcode':        firstBarcode || '(not captured)',
+        'Barcode Source': useManualBarcode ? 'Manual / Fallback' : 'TC1 D365 RAF Staging',
+        'Process':        'Conversions',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
     await ardiaContext?.close();
   }
+
+  if (deferredError) throw deferredError;
 }
 
 // Run standalone:  npx ts-node tests/tc4.ts
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }

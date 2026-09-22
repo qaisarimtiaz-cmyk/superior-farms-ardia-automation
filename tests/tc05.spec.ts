@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc5';
 
-test('TC006 - Ardia Produce -> Reprint/Reversal label (barcodereprint API)', async ({ browser }) => {
-  await run(browser);
+test('TC006 - Ardia Produce -> Reprint/Reversal label (barcodereprint API)', async ({ browser }, testInfo) => {
+  await run(browser, testInfo);
 });

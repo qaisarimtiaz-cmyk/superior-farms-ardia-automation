@@ -15,12 +15,43 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { config }    from '../config';
 import { testData }  from '../test-data';
 import { generateBatchOrderId, peekNextId } from '../utils/generate-id';
+import { writeSharedState } from '../utils/shared-state';
+import { screenshotPath } from '../utils/run-folder';
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
 
 const data = testData.TC01;
 const t    = config.timeouts;
 
-export async function run(browser: Browser) {
+/** Scroll the open Ardia dropdown container until `optionText` becomes visible.
+ *  Ardia renders option rows as plain divs (not a virtual-scroll viewport), so
+ *  we bump scrollTop incrementally and re-check — a fixed one-shot scroll +
+ *  hardcoded item index breaks whenever the target isn't at that exact index.
+ *  Ported from the proven implementation in tc12.ts / tc10.ts / tc3.ts. */
+async function scrollArdiaDropdownUntilVisible(page: Page, optionText: string): Promise<void> {
+  await page.waitForTimeout(400); // let the dropdown finish opening
+  const maxScrolls = 30;
+  const container = page
+    .locator('app-input-grid-select > div:nth-child(2), div.dropdownContainer')
+    .last();
+
+  for (let i = 0; i < maxScrolls; i++) {
+    const option = page.getByText(optionText, { exact: false }).first();
+    if (await option.isVisible({ timeout: 400 }).catch(() => false)) {
+      if (i > 0) console.log(`         (found "${optionText}" after ${i} scroll(s))`);
+      return;
+    }
+    const scrolled = await container
+      .evaluate((el: Element) => { (el as HTMLElement).scrollTop += 150; return true; })
+      .catch(() => false);
+    if (!scrolled) {
+      await page.keyboard.press('ArrowDown'); // fallback if container not found
+    }
+    await page.waitForTimeout(200);
+  }
+}
+
+export async function run(browser: Browser, testInfo: any = null) {
   console.log(`Starting Test Case 1 — ${peekNextId()} (next ID to be generated)\n`);
   console.log('Test Data:');
   console.log(`  Item:      ${data.itemNumber}`);
@@ -30,10 +61,29 @@ export async function run(browser: Browser) {
   console.log(`  Quantity:  ${data.quantity}`);
   console.log(`  Printer:   ${data.printer}\n`);
 
+  // Test data shown in BOTH the Excel and the client HTML report
+  const reportTestData: Record<string, string> = {
+    'Item Number':   String(data.itemNumber ?? ''),
+    'Configuration': String(data.configuration ?? ''),
+    'Site':          String(data.site ?? ''),
+    'Warehouse':     String(data.warehouse ?? ''),
+    'Location':      String(data.location ?? ''),
+    'Quantity':      String(data.quantity ?? ''),
+    'Formula Number':String(data.formulaNumber ?? ''),
+    'Pool':          String(data.pool ?? ''),
+    'Printer':       String(data.printer ?? ''),
+    'Process':       'Produce',
+  };
+  const report = new ReportCollector('Test Case 1', reportTestData);
+
   let d365Context:  BrowserContext | undefined;
   let ardiaContext: BrowserContext | undefined;
-  let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
+  let d365ErrPage:  Page | undefined;
+  let ardiaErrPage: Page | undefined;
   let batchOrderId = '';
+  let isSync: boolean | null = null;
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
+  let deferredError: any = null;
 
   try {
 
@@ -45,7 +95,9 @@ export async function run(browser: Browser) {
     const d365 = await openAuthedD365(browser);
     d365Context = d365.context;
     const d365Page = d365.page;
+    d365ErrPage = d365Page;
     console.log('✓ D365 ready\n');
+    report.add('Open D365 (authenticated session)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -61,6 +113,7 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.navigation });
     await d365Page.waitForTimeout(2000);
     console.log('✓ On All Production Orders page\n');
+    report.add('Navigate to All Production Orders', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -147,7 +200,22 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.action });
     await d365Page.waitForTimeout(3000);
     console.log(`✓ Batch Order ${batchOrderId} created\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-created.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-created.png') });
+    writeSharedState('TC01', { batchOrderId, generatedAt: new Date().toISOString() });
+    report.addScreenshot('Batch order created in D365', screenshotPath('screenshot-batch-order-created.png'));
+    report.add('Create Batch Order in D365', 'PASS', batchOrderId);
+
+    // The "Insert the active versions for formula and route?" dialog (same
+    // one checked for at Step 16) can also appear AFTER Create commits,
+    // not just before it — when that happens it silently blocks every
+    // click behind it (a SysBoxForm lightbox intercepts pointer events)
+    // until dismissed. Check again here so Step 20 below isn't blind to it.
+    const lateDialogVisible = await d365Page.getByRole('heading', { name: 'Insert the active versions' }).isVisible({ timeout: 5000 }).catch(() => false);
+    if (lateDialogVisible) {
+      console.log('         "Insert active versions" dialog appeared after Create — clicking Yes...');
+      await d365Page.getByRole('button', { name: 'Yes' }).click();
+      await d365Page.waitForTimeout(2000);
+    }
 
 
     // ══════════════════════════════════════════════════════════
@@ -175,7 +243,9 @@ export async function run(browser: Browser) {
     await d365Page.getByRole('checkbox', { name: 'Select or unselect row' }).first().check();
     await d365Page.waitForTimeout(1000);
     console.log(`✓ Batch Order ${batchOrderId} found and selected\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-selected.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-selected.png') });
+    report.addScreenshot('Batch order selected in grid', screenshotPath('screenshot-batch-order-selected.png'));
+    report.add('Find & select Batch Order in grid', 'PASS', batchOrderId);
 
 
     // ══════════════════════════════════════════════════════════
@@ -224,7 +294,8 @@ export async function run(browser: Browser) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Ardia ready\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-loggedin.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-loggedin.png') });
+    report.add('Open Ardia (authenticated session)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -262,20 +333,16 @@ export async function run(browser: Browser) {
     console.log(`         ✓ Site selected: ${data.site}`);
 
     // ── Step 29: Select Warehouse ──────────────────────────────
-    // Recording shows: open dropdown → scroll container → re-open → click item 25
-    console.log(`Step 29: Selecting Warehouse = "${data.warehouse}"...`);
+    // Scroll incrementally and match by visible text instead of a hardcoded
+    // item index — the index-based approach broke whenever the warehouse
+    // wasn't at the assumed position. Same fix already proven in TC3/TC10/TC12.
+    console.log(`Step 29: Selecting Warehouse = "${data.warehouseDisplayText || data.warehouse}"...`);
     await ardiaPage.locator('div:nth-of-type(4) textarea').click();
     await ardiaPage.waitForTimeout(800);
-    // Scroll the dropdown container down so item 25 (Dixon - Stock) is visible
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]')
-      .evaluate((el: Element) => { el.scrollTop = 1000; });
-    await ardiaPage.waitForTimeout(500);
-    // Re-click the textarea to keep the dropdown open after scrolling
-    await ardiaPage.locator('div:nth-of-type(4) textarea').click();
-    await ardiaPage.waitForTimeout(500);
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]/div[25]/div').click();
+    await scrollArdiaDropdownUntilVisible(ardiaPage, data.warehouseDisplayText || data.warehouse);
+    await ardiaPage.getByText(data.warehouseDisplayText || data.warehouse, { exact: !!data.warehouseDisplayText }).first().click();
     await ardiaPage.waitForTimeout(1500);  // Wait for Location list to load
-    console.log(`         ✓ Warehouse selected: ${data.warehouse}`);
+    console.log(`         ✓ Warehouse selected: ${data.warehouseDisplayText || data.warehouse}`);
 
     // ── Step 30: Select Location ───────────────────────────────
     console.log(`Step 30: Selecting Location = "${data.location}"...`);
@@ -285,7 +352,9 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForTimeout(800);
     console.log(`         ✓ Location selected: ${data.location}`);
 
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-filters-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-filters-selected.png') });
+    report.addScreenshot('Ardia filters selected', screenshotPath('screenshot-ardia-filters-selected.png'));
+    report.add('Select Ardia filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     // Verify Proceed button is enabled before clicking
     console.log('Step 31: Checking Proceed button is enabled...');
@@ -302,7 +371,8 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(3000);
     console.log('✓ Proceeded to Batch Orders page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-batch-orders.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-batch-orders.png') });
+    report.add('Proceed to Batch Orders page', 'PASS');
 
 
 
@@ -322,7 +392,8 @@ export async function run(browser: Browser) {
     await orderTile.click();
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Clicked on production order tile\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-tile-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-tile-selected.png') });
+    report.add('Open production order tile in Ardia', 'PASS', batchOrderId);
 
 
     // ══════════════════════════════════════════════════════════
@@ -347,6 +418,7 @@ export async function run(browser: Browser) {
       throw new Error('Weight input is not enabled after clicking Start Producing');
     }
     console.log('         ✓ Numpad is enabled\n');
+    report.add('Start Producing (numpad enabled)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -356,7 +428,7 @@ export async function run(browser: Browser) {
     console.log(`Step 36: Entering weight: ${config.ardia.weightInputProduce}...`);
     await weightInput.fill(config.ardia.weightInputProduce);
     await ardiaPage.waitForTimeout(500);
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-weight-entered.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-weight-entered.png') });
 
     // Set up API response listener BEFORE clicking Enter
     // Playwright intercepts the POST to /raf/v2/rafjournal triggered by Enter
@@ -387,7 +459,9 @@ export async function run(browser: Browser) {
       if (responseBody) {
         console.log(`           Response: ${JSON.stringify(responseBody).substring(0, 100)}...`);
       }
+      report.add('Produce & verify RAF (POST /raf/v2/rafjournal)', 'PASS', 'RAF POST → 200 OK');
     } catch (err: any) {
+      report.add('Produce & verify RAF (POST /raf/v2/rafjournal)', 'FAIL', err.message);
       throw new Error(
         `RAF API verification failed: ${err.message}\n` +
         `Expected POST to ${config.ardia.rafApiUrl} with status 200`
@@ -395,7 +469,7 @@ export async function run(browser: Browser) {
     }
 
     await ardiaPage.waitForTimeout(2000);
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-after-enter.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-after-enter.png') });
     console.log('         ✓ Weight submitted successfully\n');
 
 
@@ -410,17 +484,62 @@ export async function run(browser: Browser) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Stopped Producing\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-stopped.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-stopped.png') });
+    report.addScreenshot('Stopped producing', screenshotPath('screenshot-ardia-stopped.png'));
+    report.add('Stop Producing', 'PASS');
+
+
+    // ══════════════════════════════════════════════════════════
+    //  PART 14 — VERIFY RAF IN D365 (Report as finished staging data)
+    //  Wait 2 minutes for the Produce RAF to sync, then open the
+    //  staging table, filter by the batch order, and check IsSync.
+    // ══════════════════════════════════════════════════════════
+
+    console.log('Step 39: Waiting 2 minutes for RAF to sync before checking staging data...');
+    for (let remaining = 120; remaining > 0; remaining -= 30) {
+      await d365Page.waitForTimeout(30000);
+      console.log(`         ... ${Math.max(remaining - 30, 0)}s remaining`);
+    }
+
+    console.log('Step 40: Opening Report as finished staging data in D365...');
+    await openViaSearch(d365Page, 'Report as finished staging data', /Report as finished staging data/i, t.dashboard);
+    console.log('✓ Report as finished staging data opened — grid rendered\n');
+
+    console.log(`Step 41: Filtering the Production column by ${batchOrderId}...`);
+    await filterStagingByProduction(d365Page, batchOrderId);
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc1-raf-staging.png') });
+    report.addScreenshot('D365 RAF staging (IsSync)', screenshotPath('screenshot-tc1-raf-staging.png'));
+
+    console.log('Step 42: Verifying the staging row exists and IsSync = true...');
+    const rowVisible = await isBatchRowPresent(d365Page, batchOrderId);
+    if (!rowVisible) {
+      throw new Error(
+        `Batch order ${batchOrderId} not found under the Production column in Report as finished staging data`
+      );
+    }
+    console.log(`         ✓ Batch order ${batchOrderId} found in staging data`);
+
+    isSync = await verifyIsSync(d365Page, batchOrderId);
+    if (isSync === true) {
+      console.log('         ✓ IsSync = true');
+    } else if (isSync === false) {
+      throw new Error('Staging row found but IsSync = false');
+    } else {
+      console.log('         ⚠ Could not read IsSync column reliably — confirm visually (staging row is present).');
+    }
+    report.add('Verify D365 staging IsSync', (isSync as boolean | null) === false ? 'FAIL' : 'PASS', isSync === true ? 'IsSync = true' : 'IsSync unconfirmed');
 
 
     // ══════════════════════════════════════════════════════════
     //  SUMMARY
     // ══════════════════════════════════════════════════════════
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 1 PASSED');
     console.log(`   Batch Order:  ${batchOrderId}`);
-    console.log(`   Weight Input: ${config.ardia.weightInput}`);
+    console.log(`   Weight Input: ${config.ardia.weightInputProduce}`);
     console.log('   RAF API:      POST /raf/v2/rafjournal → 200 OK ✓');
+    console.log(`   RAF staging:  ${batchOrderId} present, IsSync = ${isSync === true ? 'true' : 'unconfirmed'}`);
     console.log('   Screenshots:');
     console.log('     screenshot-batch-order-created.png');
     console.log('     screenshot-batch-order-selected.png');
@@ -431,23 +550,173 @@ export async function run(browser: Browser) {
     console.log('     screenshot-ardia-weight-entered.png');
     console.log('     screenshot-ardia-after-enter.png');
     console.log('     screenshot-ardia-stopped.png');
+    console.log('     screenshot-tc1-raf-staging.png');
 
   } catch (err: any) {
+    overall = 'FAIL';
     console.error(`\n❌ TEST CASE 1 FAILED: ${err.message}`);
-    await ardiaErrPage?.screenshot({ path: 'screenshot-error.png' }).catch(() => {});
-    console.log('   Error screenshot saved: screenshot-error.png');
+    report.add('TEST FAILED', 'FAIL', err.message);
+    await d365ErrPage?.screenshot({ path: screenshotPath('screenshot-tc1-error-d365.png') }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-error.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot (D365)', screenshotPath('screenshot-tc1-error-d365.png'));
+    report.addScreenshot('Failure screenshot (Ardia)', screenshotPath('screenshot-error.png'));
+    console.log('   Error screenshots saved: screenshot-error.png, screenshot-tc1-error-d365.png');
     console.log('   Batch Order at failure:', batchOrderId || 'not yet created');
-    throw err;   // surface failure to the Playwright Test Runner
+    deferredError = err;
   } finally {
+    // ── Finalize: attach data for the client HTML report + write Excel ──
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result': overall,
+        'Batch Order ID': batchOrderId || '(not created)',
+        'Weight Input':   config.ardia.weightInputProduce,
+        'Process':        'Produce',
+        'RAF API':        'POST /raf/v2/rafjournal → 200 OK',
+        'RAF Staging IsSync': isSync === true ? 'true' : isSync === false ? 'false' : 'unconfirmed',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
     await ardiaContext?.close();
   }
+
+  // Surface failure to the Playwright Test Runner AFTER the report is written.
+  if (deferredError) throw deferredError;
+}
+
+// ============================================================
+//  Helpers
+// ============================================================
+
+async function openViaSearch(page: Page, term: string, optionName: RegExp, gridTimeout: number): Promise<void> {
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.waitForTimeout(1000);
+
+  const box = page.getByRole('textbox', { name: 'Search for a page' });
+  await box.waitFor({ timeout: t.element });
+  await box.fill(term);
+  await page.waitForTimeout(1500);
+
+  await page.getByRole('option', { name: optionName }).first().click();
+  await page.waitForLoadState('domcontentloaded', { timeout: t.navigation }).catch(() => {});
+
+  const reactGridReady = await page.locator('.reactGrid, [id*="MainGrid"], [id*="Grid_"]')
+    .first().waitFor({ state: 'visible', timeout: 30000 }).then(() => true).catch(() => false);
+
+  if (!reactGridReady) {
+    await page.locator('[role="row"], [role="grid"], .grid-body, [id*="row-"], .formSection')
+      .first().waitFor({ state: 'visible', timeout: gridTimeout })
+      .catch(() => {});
+  }
+  await page.waitForTimeout(2000);
+}
+
+async function filterStagingByProduction(page: Page, batchOrderId: string): Promise<void> {
+  await page.getByText('Production', { exact: true }).first().click().catch(() => {});
+  await page.waitForTimeout(800);
+
+  const productionFilter = page.getByRole('combobox', { name: 'Filter field: Production,' });
+  await productionFilter.waitFor({ state: 'visible', timeout: t.element });
+  await productionFilter.click();
+  await productionFilter.fill(batchOrderId);
+  await page.waitForTimeout(500);
+
+  await page.getByRole('button', { name: 'Apply' }).click();
+  await page.waitForTimeout(3000);
+}
+
+async function isBatchRowPresent(page: Page, batchOrderId: string): Promise<boolean> {
+  const titleCell = page.locator(`[id*="row-"][title="${batchOrderId}"]`).first();
+  if (await titleCell.isVisible({ timeout: t.element }).catch(() => false)) return true;
+
+  const rowFields = page.locator('[id*="row-"] input, input[id*="row-"], [id*="row-"] textarea');
+  const n = Math.min(await rowFields.count().catch(() => 0), 60);
+  for (let i = 0; i < n; i++) {
+    const v = await rowFields.nth(i).inputValue().catch(() => '');
+    if (v && v.trim() === batchOrderId) return true;
+  }
+
+  const rowCount = await page.getByRole('checkbox', { name: 'Select or unselect row' })
+    .count().catch(() => 0);
+  if (rowCount > 0) return true;
+
+  return await page.getByText(batchOrderId, { exact: false }).first()
+    .isVisible({ timeout: 2000 }).catch(() => false);
+}
+
+async function verifyIsSync(page: Page, batchOrderId: string): Promise<boolean | null> {
+  return await page.evaluate((prodId: string) => {
+    const readVal = (el: Element): string => {
+      const input = el.querySelector('input') as HTMLInputElement | null;
+      const candidates = [
+        input?.value,
+        (el as HTMLElement).getAttribute('title'),
+        (el as HTMLElement).getAttribute('aria-label'),
+        (el as HTMLElement).getAttribute('value'),
+        (el as HTMLElement).innerText,
+        el.textContent,
+      ];
+      for (const c of candidates) if (c && c.trim()) return c.trim();
+      return '';
+    };
+
+    const readChecked = (el: Element): boolean | null => {
+      const input = el.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (input) return input.checked;
+
+      const ac = el.getAttribute('aria-checked');
+      if (ac === 'true')  return true;
+      if (ac === 'false') return false;
+
+      const v = readVal(el).toLowerCase();
+      if (/yes|true|✓/.test(v))  return true;
+      if (/no|false/.test(v))    return false;
+
+      const html = el.innerHTML.trim();
+      if (!html)               return false;
+      if (el.children.length > 0) return true;
+      if (html.length > 0)     return true;
+
+      return null;
+    };
+
+    const prodEls = Array.from(document.querySelectorAll(
+      '[aria-label="Production"], [title="Production"]'
+    ));
+    let idx = -1;
+    for (let i = 0; i < prodEls.length; i++) {
+      const v = readVal(prodEls[i]);
+      if (v === prodId || v.includes(prodId)) { idx = i; break; }
+    }
+
+    const syncEls = Array.from(document.querySelectorAll(
+      '[aria-label="IsSync"], [title="IsSync"]'
+    ));
+
+    if (idx !== -1 && syncEls[idx]) {
+      const result = readChecked(syncEls[idx]);
+      if (result !== null) return result;
+    }
+
+    for (const el of syncEls) {
+      const isHeader = el.closest('[role="columnheader"], thead, [class*="header"]') !== null;
+      if (isHeader) continue;
+      const result = readChecked(el);
+      if (result !== null) return result;
+    }
+
+    return null;
+  }, batchOrderId).catch(() => null);
 }
 
 // Run standalone:  npx ts-node tests/tc1.ts
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }

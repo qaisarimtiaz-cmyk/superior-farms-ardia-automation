@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc4';
 
-test('TC005 - RAF staging barcode -> Ardia Fresh-to-Frozen conversion', async ({ browser }) => {
-  await run(browser);
+test('TC004 - RAF staging barcode -> Ardia Fresh-to-Frozen conversion', async ({ browser }, testInfo) => {
+  await run(browser, testInfo);
 });

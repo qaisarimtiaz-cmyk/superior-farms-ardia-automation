@@ -14,8 +14,13 @@
 //    reporter: [
 //      ['list'],
 //      ['html', { open: 'never' }],
-//      ['./tests/reporters/client-report.ts', { outputFile: 'reports/Client_Execution_Report.html' }],
+//      ['./tests/reporters/client-report.ts', { outputFile: 'Client_Execution_Report.html' }],
 //    ]
+//
+//  The report is written into this run's timestamped folder (see
+//  utils/run-folder.ts) — `outputFile` above only supplies the filename,
+//  not the directory, so every execution gets its own copy alongside
+//  that run's screenshots instead of overwriting the last one.
 //
 //  Print to PDF: open the HTML in Chrome → Print → Save as PDF
 //  (A4, "Background graphics" ON). The CSS is tuned for clean page breaks.
@@ -26,6 +31,7 @@ import type {
 } from '@playwright/test/reporter';
 import * as fs from 'fs';
 import * as path from 'path';
+import { getRunFolder } from '../../utils/run-folder';
 
 interface StepRow {
   step:   string;
@@ -55,7 +61,10 @@ class ClientReporter implements Reporter {
   private runStartedAt = new Date();
 
   constructor(options: { outputFile?: string } = {}) {
-    this.outputFile = options.outputFile || 'reports/Client_Execution_Report.html';
+    // Only the filename is kept — the directory is resolved at write time
+    // to whatever this run's folder is (see onEnd), so a full path passed
+    // here (old config style) still works via path.basename() below.
+    this.outputFile = options.outputFile || 'Client_Execution_Report.html';
   }
 
   onBegin(_config: FullConfig, _suite: Suite): void {
@@ -78,12 +87,13 @@ class ClientReporter implements Reporter {
   }
 
   async onEnd(result: FullResult): Promise<void> {
-    const dir = path.dirname(this.outputFile);
+    const outputPath = path.join(getRunFolder(), path.basename(this.outputFile));
+    const dir = path.dirname(outputPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const html = this.renderHtml(result);
-    fs.writeFileSync(this.outputFile, html, 'utf-8');
+    fs.writeFileSync(outputPath, html, 'utf-8');
     // eslint-disable-next-line no-console
-    console.log(`\n📄 Client report written: ${path.resolve(this.outputFile)}`);
+    console.log(`\n📄 Client report written: ${path.resolve(outputPath)}`);
   }
 
   // ──────────────────────────────────────────────────────────

@@ -20,6 +20,12 @@ import { config as env } from './config';
 export default defineConfig({
   testDir: './tests',
 
+  // Creates this run's timestamped reports/runs/<date-time>/ folder before
+  // anything else starts, so every test's screenshots and the client
+  // report all land in the same place for this execution. See
+  // utils/run-folder.ts.
+  globalSetup: './global-setup.ts',
+
   // These flows are long (D365 login + MFA + Ardia). Give them room.
   timeout: env.timeouts.dashboard * 3,   // ~6 min per test
   expect: { timeout: env.timeouts.element },
@@ -34,11 +40,13 @@ export default defineConfig({
     ['html', { open: 'never' }],       // interactive HTML report -> playwright-report/
     ['json', { outputFile: 'test-results/results.json' }],
     // Client-facing, PDF-ready branded report (print to PDF from Chrome).
-    ['./tests/reporters/client-report.ts', { outputFile: 'reports/Client_Execution_Report.html' }],
+    // Only the filename is used — the directory is always this run's
+    // timestamped folder (see utils/run-folder.ts).
+    ['./tests/reporters/client-report.ts', { outputFile: 'Client_Execution_Report.html' }],
   ],
 
   use: {
-    headless: false,
+    headless: process.env.HEADLESS === 'true',
     launchOptions: { slowMo: 500, args: ['--ignore-certificate-errors'] },
     ignoreHTTPSErrors: true,           // Ardia uses a self-signed certificate
     viewport: { width: 1920, height: 1080 },

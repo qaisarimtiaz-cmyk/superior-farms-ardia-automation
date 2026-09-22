@@ -20,11 +20,13 @@ import { testData }  from '../test-data';
 import { generateBatchOrderId, peekNextId } from '../utils/generate-id';
 import { writeSharedState } from '../utils/shared-state';
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
+import { screenshotPath } from '../utils/run-folder';
 
 const data = testData.TC12;
 const t    = config.timeouts;
 
-export async function run(browser: Browser) {
+export async function run(browser: Browser, testInfo: any = null) {
   console.log(`Starting Test Case 12 — ${peekNextId()} (next ID to be generated)\n`);
   console.log('Test Data:');
   console.log(`  Item:      ${data.itemNumber}`);
@@ -34,11 +36,26 @@ export async function run(browser: Browser) {
   console.log(`  Quantity:  ${data.quantity}`);
   console.log(`  Printer:   ${data.printer}\n`);
 
+  // Test data shown in BOTH the Excel and the client HTML report
+  const reportTestData: Record<string, string> = {
+    'Item Number':     String(data.itemNumber ?? ''),
+    'Site':            String(data.site ?? ''),
+    'Warehouse':       String(data.warehouse ?? ''),
+    'Location':        String(data.location ?? ''),
+    'Quantity':        String(data.quantity ?? ''),
+    'Printer':         String(data.printer ?? ''),
+    'Customer Label':  String(data.customerLabelText ?? ''),
+    'Produce Weight':  String(data.produceWeight ?? ''),
+  };
+  const report = new ReportCollector('Test Case 12', reportTestData);
+
   let d365Context:  BrowserContext | undefined;
   let ardiaContext: BrowserContext | undefined;
   let d365ErrPage:  Page | undefined;   // referenced by the catch block for an error screenshot
   let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
   let batchOrderId = '';
+  let isSync: boolean | null = null;
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
 
   try {
 
@@ -52,6 +69,7 @@ export async function run(browser: Browser) {
     const d365Page = d365.page;
     d365ErrPage = d365Page;
     console.log('✓ Logged in and dashboard loaded\n');
+    report.add('Login to D365 (+ MFA)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -67,6 +85,7 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.navigation });
     await d365Page.waitForTimeout(2000);
     console.log('✓ On All Production Orders page\n');
+    report.add('Navigate to All Production Orders', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -153,10 +172,12 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.action });
     await d365Page.waitForTimeout(3000);
     console.log(`✓ Batch Order ${batchOrderId} created\n`);
-    await d365Page.screenshot({ path: 'screenshot-tc12-batch-order-created.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc12-batch-order-created.png') });
+    report.addScreenshot('Batch order created in D365', screenshotPath('screenshot-tc12-batch-order-created.png'));
+    report.add('Create Batch Order in D365', 'PASS', batchOrderId);
 
     // Persist batchOrderId so downstream test cases can chain off it
-    writeSharedState({
+    writeSharedState('TC12', {
       batchOrderId,
       generatedAt: new Date().toISOString(),
     });
@@ -188,7 +209,9 @@ export async function run(browser: Browser) {
     await d365Page.getByRole('checkbox', { name: 'Select or unselect row' }).first().check();
     await d365Page.waitForTimeout(1000);
     console.log(`✓ Batch Order ${batchOrderId} found and selected\n`);
-    await d365Page.screenshot({ path: 'screenshot-tc12-batch-order-selected.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc12-batch-order-selected.png') });
+    report.addScreenshot('Batch order selected in grid', screenshotPath('screenshot-tc12-batch-order-selected.png'));
+    report.add('Find & select Batch Order in grid', 'PASS', batchOrderId);
 
     // ══════════════════════════════════════════════════════════
     //  PART 5 — OPEN AND LOGIN TO ARDIA
@@ -199,7 +222,9 @@ export async function run(browser: Browser) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Logged into Ardia\n');
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-loggedin.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-loggedin.png') });
+    report.addScreenshot('Ardia logged in', screenshotPath('screenshot-tc12-ardia-loggedin.png'));
+    report.add('Open & login to Ardia', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 6 — SELECT PROCESS / PRINTER / SITE / WAREHOUSE / LOCATION + PROCEED
@@ -227,7 +252,9 @@ export async function run(browser: Browser) {
 
     console.log(`Step 27: Selecting Location = "${data.ardiaLocationText}"...`);
     await selectArdiaDropdown(ardiaPage, 4, data.ardiaLocationText!);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-filters.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-filters.png') });
+    report.addScreenshot('Ardia filters selected', screenshotPath('screenshot-tc12-ardia-filters.png'));
+    report.add('Select Ardia filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     console.log('Step 28: Clicking Proceed...');
     const proceedBtn = ardiaPage.getByRole('button', { name: 'Proceed' });
@@ -238,7 +265,9 @@ export async function run(browser: Browser) {
     await proceedBtn.click();
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation }).catch(() => {});
     await ardiaPage.waitForTimeout(3000);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-batch-orders.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-batch-orders.png') });
+    report.addScreenshot('Ardia batch orders page', screenshotPath('screenshot-tc12-ardia-batch-orders.png'));
+    report.add('Proceed to Batch Orders page', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 7 — FIND THE BATCH ORDER TILE (created in D365) + OPEN
@@ -252,7 +281,9 @@ export async function run(browser: Browser) {
     await orderTile.first().click();
     await ardiaPage.waitForTimeout(2000);
     console.log(`✓ Opened batch order ${batchOrderId}\n`);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-tile-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-tile-selected.png') });
+    report.addScreenshot('Batch order tile selected in Ardia', screenshotPath('screenshot-tc12-ardia-tile-selected.png'));
+    report.add('Open batch order tile in Ardia', 'PASS', batchOrderId);
 
     // ══════════════════════════════════════════════════════════
     //  PART 8 — CUSTOMER LABEL → HEB → SAVE   (the extra step vs TC1)
@@ -270,7 +301,9 @@ export async function run(browser: Browser) {
     await ardiaPage.getByRole('button', { name: 'Save' }).click();
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation }).catch(() => {});
     await ardiaPage.waitForTimeout(1500);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-customer-label.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-customer-label.png') });
+    report.addScreenshot('Customer Label (HEB) saved', screenshotPath('screenshot-tc12-ardia-customer-label.png'));
+    report.add('Select HEB Customer Label & Save', 'PASS', data.customerLabelText);
 
     // ══════════════════════════════════════════════════════════
     //  PART 9 — START PRODUCING → WEIGHT → ENTER → STOP PRODUCING
@@ -286,7 +319,9 @@ export async function run(browser: Browser) {
       await ardiaPage.getByRole('button', { name: digit, exact: true }).click();
       await ardiaPage.waitForTimeout(200);
     }
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-weight-entered.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-weight-entered.png') });
+    report.addScreenshot('Weight entered on numpad', screenshotPath('screenshot-tc12-ardia-weight-entered.png'));
+    report.add('Enter produce weight', 'PASS', data.produceWeight);
 
     // Set up the RAF API listener BEFORE clicking Enter (TC1 pattern).
     console.log('Step 35: Clicking Enter and verifying RAF journal API...');
@@ -309,14 +344,17 @@ export async function run(browser: Browser) {
       console.log(`           URL:    ${rafResponse.url()}`);
       console.log(`           Method: POST`);
       console.log(`           Status: ${status} OK`);
+      report.add('Produce & verify RAF (POST /raf/v2/rafjournal)', 'PASS', 'RAF POST → 200 OK');
     } catch (err: any) {
+      report.add('Produce & verify RAF (POST /raf/v2/rafjournal)', 'FAIL', err.message);
       throw new Error(
         `RAF API verification failed: ${err.message}\n` +
         `Expected POST to ${config.ardia.rafApiUrl} with status 200`
       );
     }
     await ardiaPage.waitForTimeout(2000);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-after-enter.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-after-enter.png') });
+    report.addScreenshot('After Enter (RAF submitted)', screenshotPath('screenshot-tc12-ardia-after-enter.png'));
 
     console.log('Step 36: Clicking Stop Producing...');
     const stopProducingBtn = ardiaPage.getByRole('button', { name: 'Stop Producing' });
@@ -324,7 +362,9 @@ export async function run(browser: Browser) {
     await stopProducingBtn.click();
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation }).catch(() => {});
     await ardiaPage.waitForTimeout(2000);
-    await ardiaPage.screenshot({ path: 'screenshot-tc12-ardia-stopped.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-tc12-ardia-stopped.png') });
+    report.addScreenshot('Stopped producing', screenshotPath('screenshot-tc12-ardia-stopped.png'));
+    report.add('Stop Producing', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 10 — VERIFY RAF IN D365 (Report as finished staging data)
@@ -342,10 +382,12 @@ export async function run(browser: Browser) {
     console.log('Step 38: Opening Report as finished staging data in D365...');
     await openViaSearch(d365Page, 'report as finished', /Report as finished staging data/i, t.dashboard);
     console.log('✓ Report as finished staging data opened — grid rendered\n');
+    report.add('Open Report as finished staging data', 'PASS');
 
     console.log(`Step 39: Filtering the Production column by ${batchOrderId}...`);
     await filterStagingByProduction(d365Page, batchOrderId);
-    await d365Page.screenshot({ path: 'screenshot-tc12-raf-staging.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc12-raf-staging.png') });
+    report.addScreenshot('D365 RAF staging (IsSync)', screenshotPath('screenshot-tc12-raf-staging.png'));
 
     console.log('Step 40: Verifying the staging row exists and IsSync = true...');
     const rowVisible = await isBatchRowPresent(d365Page, batchOrderId);
@@ -356,7 +398,7 @@ export async function run(browser: Browser) {
     }
     console.log(`         ✓ Batch order ${batchOrderId} found in staging data`);
 
-    const isSync = await verifyIsSync(d365Page, batchOrderId);
+    isSync = await verifyIsSync(d365Page, batchOrderId);
     if (isSync === true) {
       console.log('         ✓ IsSync = true');
     } else if (isSync === false) {
@@ -364,7 +406,9 @@ export async function run(browser: Browser) {
     } else {
       console.log('         ⚠ Could not read IsSync column reliably — confirm visually (staging row is present).');
     }
+    report.add('Verify D365 staging IsSync', (isSync as boolean | null) === false ? 'FAIL' : 'PASS', isSync === true ? 'IsSync = true' : 'IsSync unconfirmed');
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 12 PASSED');
     console.log(`   Batch Order:    ${batchOrderId}`);
     console.log(`   Customer Label: ${data.customerLabelText}`);
@@ -373,13 +417,31 @@ export async function run(browser: Browser) {
     console.log(`   RAF staging:    ${batchOrderId} present, IsSync = ${isSync === true ? 'true' : 'unconfirmed'}`);
 
   } catch (err: any) {
+    report.add('TEST FAILED', 'FAIL', err.message ?? String(err));
     console.error(`\n❌ TEST CASE 12 FAILED: ${err.message}`);
-    await d365ErrPage?.screenshot({ path: 'screenshot-tc12-error-d365.png' }).catch(() => {});
-    await ardiaErrPage?.screenshot({ path: 'screenshot-tc12-error-ardia.png' }).catch(() => {});
+    await d365ErrPage?.screenshot({ path: screenshotPath('screenshot-tc12-error-d365.png') }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-tc12-error-ardia.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot (D365)', screenshotPath('screenshot-tc12-error-d365.png'));
+    report.addScreenshot('Failure screenshot (Ardia)', screenshotPath('screenshot-tc12-error-ardia.png'));
     console.log('   Error screenshots saved: screenshot-tc12-error-d365.png, screenshot-tc12-error-ardia.png');
     console.log('   Batch Order at failure:', batchOrderId || 'not yet created');
     throw err;   // surface failure to the Playwright Test Runner
   } finally {
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result':     overall,
+        'Batch Order ID':     batchOrderId || '(not created)',
+        'Customer Label':     data.customerLabelText ?? '',
+        'Produce Weight':     data.produceWeight ?? '',
+        'RAF API':            'POST /raf/v2/rafjournal → 200 OK',
+        'RAF Staging IsSync': isSync === true ? 'true' : isSync === false ? 'false' : 'unconfirmed',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
     await ardiaContext?.close();
   }
@@ -621,6 +683,6 @@ async function scrollArdiaDropdownUntilVisible(page: Page, optionText: string): 
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }

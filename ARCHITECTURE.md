@@ -14,7 +14,7 @@ Authentication is centralized: a one-time `setup` project logs into both systems
 > Figma `generate_diagram` tool once the Figma integration is connected.
 
 ```mermaid
-%%{ init: { 'flowchart': { 'nodeSpacing': 70, 'rankSpacing': 120, 'subGraphTitleMargin': { 'top': 10, 'bottom': 10 }, 'padding': 18, 'useMaxWidth': false } } }%%
+%%{ init: { 'flowchart': { 'nodeSpacing': 100, 'rankSpacing': 180, 'subGraphTitleMargin': { 'top': 10, 'bottom': 10 }, 'padding': 18, 'useMaxWidth': false } } }%%
 flowchart LR
 
   subgraph EXEC["Execution Layer"]

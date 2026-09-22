@@ -3,8 +3,8 @@
 import { test } from '@playwright/test';
 import { run } from './tc13';
 
-test('TC013 - D365 batch order -> Ardia Produce', async ({ browser }) => {
+test('TC013 - D365 batch order -> Ardia Produce', async ({ browser }, testInfo) => {
   // End-to-end with MFA, batch create, Ardia produce, sync wait and verify.
   test.setTimeout(20 * 60 * 1000);
-  await run(browser);
+  await run(browser, testInfo);
 });

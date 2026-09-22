@@ -3,8 +3,8 @@
 import { test } from '@playwright/test';
 import { run } from './tc2';
 
-test('TC002 - Produce via CR Transfer: D365 batch order -> Ardia -> RAF staging verify', async ({ browser }) => {
+test('TC002 - Produce via CR Transfer: D365 batch order -> Ardia -> RAF staging verify', async ({ browser }, testInfo) => {
   // End-to-end: batch create -> Ardia CR Transfer produce -> ~2 min RAF sync wait -> staging verify.
   test.setTimeout(20 * 60 * 1000);
-  await run(browser);
+  await run(browser, testInfo);
 });

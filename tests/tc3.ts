@@ -15,12 +15,14 @@ import { config }    from '../config';
 import { testData }  from '../test-data';
 import { generateBatchOrderId, peekNextId } from '../utils/generate-id';
 import { writeSharedState } from '../utils/shared-state';
+import { screenshotPath } from '../utils/run-folder';
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
+import { ReportCollector } from './helpers/report-collector';
 
 const data = testData.TC03;
 const t    = config.timeouts;
 
-export async function run(browser: Browser) {
+export async function run(browser: Browser, testInfo: any = null) {
   console.log(`Starting Test Case 3 — ${peekNextId()} (next ID to be generated)\n`);
   console.log('Test Data:');
   console.log(`  Item:      ${data.itemNumber}`);
@@ -30,11 +32,29 @@ export async function run(browser: Browser) {
   console.log(`  Quantity:  ${data.quantity}`);
   console.log(`  Printer:   ${data.printer}\n`);
 
+  // Test data shown in BOTH the Excel and the client HTML report
+  const reportTestData: Record<string, string> = {
+    'Item Number':   String(data.itemNumber ?? ''),
+    'Configuration': String(data.configuration ?? ''),
+    'Site':          String(data.site ?? ''),
+    'Warehouse':     String(data.warehouse ?? ''),
+    'Location':      String(data.location ?? ''),
+    'Quantity':      String(data.quantity ?? ''),
+    'Formula Number':String(data.formulaNumber ?? ''),
+    'Pool':          String(data.pool ?? ''),
+    'Printer':       String(data.printer ?? ''),
+    'Process':       'Hangback',
+  };
+  const report = new ReportCollector('Test Case 3', reportTestData);
+
   let d365Context:  BrowserContext | undefined;
   let ardiaContext: BrowserContext | undefined;
   let d365ErrPage:  Page | undefined;   // referenced by the catch block for an error screenshot
   let ardiaErrPage: Page | undefined;   // referenced by the catch block for an error screenshot
   let batchOrderId = '';
+  let rafApiVerified: boolean | null = null;   // true = POST /RAFLicensePlate/rafjournal returned 200
+  let overall: 'PASS' | 'FAIL' = 'FAIL';
+  let deferredError: any = null;
 
   try {
 
@@ -48,6 +68,7 @@ export async function run(browser: Browser) {
     const d365Page = d365.page;
     d365ErrPage = d365Page;
     console.log('✓ D365 ready\n');
+    report.add('Open D365 (authenticated session)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -63,6 +84,7 @@ export async function run(browser: Browser) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.navigation });
     await d365Page.waitForTimeout(2000);
     console.log('✓ On All Production Orders page\n');
+    report.add('Navigate to All Production Orders', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
@@ -166,12 +188,14 @@ if (dialogVisible) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.action });
     await d365Page.waitForTimeout(3000);
     console.log(`✓ Batch Order ${batchOrderId} created\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-created.png' });
-    writeSharedState({
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-created.png') });
+    writeSharedState('TC03', {
       batchOrderId,
       generatedAt: new Date().toISOString(),
     });
     console.log('   [shared-state] batchOrderId persisted for TC9\n');
+    report.addScreenshot('Batch order created in D365', screenshotPath('screenshot-batch-order-created.png'));
+    report.add('Create Batch Order in D365', 'PASS', batchOrderId);
 
 
     // ══════════════════════════════════════════════════════════
@@ -199,7 +223,9 @@ if (dialogVisible) {
     await d365Page.getByRole('checkbox', { name: 'Select or unselect row' }).first().check();
     await d365Page.waitForTimeout(1000);
     console.log(`✓ Batch Order ${batchOrderId} found and selected\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-selected.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-selected.png') });
+    report.addScreenshot('Batch order selected in grid', screenshotPath('screenshot-batch-order-selected.png'));
+    report.add('Find & select Batch Order in grid', 'PASS', batchOrderId);
 
 
     // ══════════════════════════════════════════════════════════
@@ -248,7 +274,8 @@ if (dialogVisible) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Ardia ready\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-loggedin.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-loggedin.png') });
+    report.add('Open Ardia (authenticated session)', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 9 — ARDIA FILTER PANEL
@@ -335,7 +362,9 @@ if (dialogVisible) {
     await ardiaPage.waitForTimeout(800);
     console.log(`         ✓ Location selected: ${data.location}`);
 
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-filters-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-filters-selected.png') });
+    report.addScreenshot('Ardia filters selected', screenshotPath('screenshot-ardia-filters-selected.png'));
+    report.add('Select Ardia filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     // ── Step 31: Verify Proceed button is enabled ──────────────
     console.log('Step 31: Checking Proceed button is enabled...');
@@ -353,7 +382,8 @@ if (dialogVisible) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(3000);
     console.log('✓ Proceeded to Batch Orders page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-batch-orders.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-batch-orders.png') });
+    report.add('Proceed to Batch Orders page', 'PASS');
 
     // ══════════════════════════════════════════════════════════
     //  PART 10 — FIND AND OPEN THE PRODUCTION ORDER TILE
@@ -371,7 +401,8 @@ if (dialogVisible) {
     await orderTile.click();
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Clicked on production order tile\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-tile-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-tile-selected.png') });
+    report.add('Open production order tile in Ardia', 'PASS', batchOrderId);
 
 
     // ══════════════════════════════════════════════════════════
@@ -399,14 +430,16 @@ if (dialogVisible) {
       throw new Error('One or more numpad inputs are not enabled after clicking Start Producing');
     }
     console.log('         ✓ Numpad is enabled\n');
+    report.add('Start Producing (numpad enabled)', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
-    //  PART 12 — ENTER WEIGHT
-    //  NOTE: No RAF-journal API check here. Hangback posts through a
-    //  DIFFERENT API than the standard /raf/v2/rafjournal endpoint, so
-    //  asserting that URL would always fail. The real verification is the
-    //  downstream "Report as finished staging data" IsSync check (PART 14).
+    //  PART 12 — ENTER WEIGHT AND VERIFY RAF API CALL
+    //  Hangback posts through the RAFLicensePlate endpoint
+    //  (https://10.164.2.92:812/RAFLicensePlate/rafjournal) — NOT the
+    //  standard /raf/v2/rafjournal used by the Produce flow (TC1). We
+    //  assert that POST returns 200; the downstream D365 "Hangback report
+    //  as finished staging data" IsSync check (PART 14) confirms the sync.
     // ══════════════════════════════════════════════════════════
 
     console.log(`Step 36: Entering quantity: ${config.ardia.qtyInput}...`);
@@ -414,13 +447,39 @@ if (dialogVisible) {
     console.log(`Step 36: Entering weight: ${config.ardia.weightInput}...`);
     await weightInput.fill(config.ardia.weightInput);
     await ardiaPage.waitForTimeout(500);
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-weight-entered.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-weight-entered.png') });
 
-    console.log('Step 37: Clicking Enter to submit the weight...');
+    // Set up the RAF API listener BEFORE clicking Enter (Hangback / CR Transfer endpoint).
+    console.log('Step 37: Clicking Enter and verifying RAF API call...');
+    const RAF_API_PATH = '/RAFLicensePlate/rafjournal';
+    const rafApiPromise = ardiaPage.waitForResponse(
+      response =>
+        response.url().includes(RAF_API_PATH) &&
+        response.request().method() === 'POST',
+      { timeout: t.apiResponse }
+    ).catch(() => null);
+
     await ardiaPage.getByRole('button', { name: 'Enter' }).click();
+
+    const rafResponse = await rafApiPromise;
+    if (rafResponse) {
+      const status = rafResponse.status();
+      if (status !== 200) {
+        throw new Error(`RAF API (Hangback) returned ${status} (expected 200) — POST ${RAF_API_PATH}`);
+      }
+      rafApiVerified = true;
+      console.log(`         ✓ RAF API call verified — POST ${RAF_API_PATH} → 200 OK`);
+      console.log(`           URL: ${rafResponse.url()}`);
+      report.add('Verify RAF API (POST /RAFLicensePlate/rafjournal)', 'PASS', 'RAF POST → 200 OK');
+    } else {
+      rafApiVerified = false;
+      console.log(`         ⚠ No POST to ${RAF_API_PATH} captured within ${t.apiResponse}ms — relying on the D365 IsSync check (PART 14).`);
+      report.add('Verify RAF API (POST /RAFLicensePlate/rafjournal)', 'INFO', 'No POST captured — relying on IsSync');
+    }
+
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation }).catch(() => {});
     await ardiaPage.waitForTimeout(2000);
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-after-enter.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-after-enter.png') });
     console.log('         ✓ Weight submitted\n');
 
 
@@ -435,15 +494,16 @@ if (dialogVisible) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Stopped Producing\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-stopped.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-stopped.png') });
+    report.addScreenshot('Stopped producing', screenshotPath('screenshot-ardia-stopped.png'));
+    report.add('Stop Producing', 'PASS');
 
 
     // ══════════════════════════════════════════════════════════
-    //  PART 14 — VERIFY RAF IN D365 (Report as finished staging data)
-    //  Hangback posts through a different API, so instead of an Ardia API
-    //  assertion we confirm the result in D365: open the staging table,
-    //  filter the Production column by the batch order, and check IsSync.
-    //  (Same approach as TC12.)
+    //  PART 14 — VERIFY RAF IN D365 (Hangback report as finished staging data)
+    //  Downstream confirmation for the Hangback flow: open the Hangback
+    //  staging table, filter the Production column by the batch order, and
+    //  check IsSync. (Backs up the PART 12 RAF API assertion.)
     // ══════════════════════════════════════════════════════════
     // RAF sync lags the produce — wait 2 minutes once, then open the
     // staging table and check; it will be synced by then.
@@ -453,19 +513,20 @@ if (dialogVisible) {
       console.log(`         ... ${Math.max(remaining - 30, 0)}s remaining`);
     }
 
-    console.log('Step 40: Opening Report as finished staging data in D365...');
-    await openViaSearch(d365Page, 'report as finished', /Report as finished staging data/i, t.dashboard);
-    console.log('✓ Report as finished staging data opened — grid rendered\n');
+    console.log('Step 40: Opening Hangbacks Report as finished staging data in D365...');
+    await openViaSearch(d365Page, 'Hangbacks Report as finished', /Hangbacks Report as finished staging data/i, t.dashboard);
+    console.log('✓ Hangbacks Report as finished staging data opened — grid rendered\n');
 
     console.log(`Step 41: Filtering the Production column by ${batchOrderId}...`);
     await filterStagingByProduction(d365Page, batchOrderId);
-    await d365Page.screenshot({ path: 'screenshot-tc3-raf-staging.png' });
+    await d365Page.screenshot({ path: screenshotPath('screenshot-tc3-raf-staging.png') });
+    report.addScreenshot('D365 Hangbacks staging (IsSync)', screenshotPath('screenshot-tc3-raf-staging.png'));
 
     console.log('Step 42: Verifying the staging row exists and IsSync = true...');
     const rowVisible = await isBatchRowPresent(d365Page, batchOrderId);
     if (!rowVisible) {
       throw new Error(
-        `Batch order ${batchOrderId} not found under the Production column in Report as finished staging data`
+        `Batch order ${batchOrderId} not found under the Production column in Hangbacks Report as finished staging data`
       );
     }
     console.log(`         ✓ Batch order ${batchOrderId} found in staging data`);
@@ -478,16 +539,19 @@ if (dialogVisible) {
     } else {
       console.log('         ⚠ Could not read IsSync column reliably — confirm visually (staging row is present).');
     }
+    report.add('Verify D365 Hangbacks staging IsSync', (isSync as boolean | null) === false ? 'FAIL' : 'PASS', isSync === true ? 'IsSync = true' : 'IsSync unconfirmed');
 
 
     // ══════════════════════════════════════════════════════════
     //  SUMMARY
     // ══════════════════════════════════════════════════════════
 
+    overall = 'PASS';
     console.log('\n✅ TEST CASE 3 PASSED');
     console.log(`   Batch Order:  ${batchOrderId}`);
     console.log(`   Weight Input: ${config.ardia.weightInput}`);
-    console.log(`   RAF staging:  ${batchOrderId} present, IsSync = ${isSync === true ? 'true' : 'unconfirmed'}`);
+    console.log(`   RAF API:      ${rafApiVerified === true ? 'POST /RAFLicensePlate/rafjournal → 200 OK ✓' : 'not captured (verified via IsSync)'}`);
+    console.log(`   RAF staging:  ${batchOrderId} present (Hangback), IsSync = ${isSync === true ? 'true' : 'unconfirmed'}`);
     console.log('   Screenshots:');
     console.log('     screenshot-batch-order-created.png');
     console.log('     screenshot-batch-order-selected.png');
@@ -501,23 +565,44 @@ if (dialogVisible) {
     console.log('     screenshot-tc3-raf-staging.png');
 
   } catch (err: any) {
+    overall = 'FAIL';
     console.error(`\n❌ TEST CASE 3 FAILED: ${err.message}`);
-    await d365ErrPage?.screenshot({ path: 'screenshot-tc3-error-d365.png' }).catch(() => {});
-    await ardiaErrPage?.screenshot({ path: 'screenshot-error.png' }).catch(() => {});
+    report.add('TEST FAILED', 'FAIL', err.message);
+    await d365ErrPage?.screenshot({ path: screenshotPath('screenshot-tc3-error-d365.png') }).catch(() => {});
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-error.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot', screenshotPath('screenshot-error.png'));
     console.log('   Error screenshots saved: screenshot-error.png, screenshot-tc3-error-d365.png');
     console.log('   Batch Order at failure:', batchOrderId || 'not yet created');
-    throw err;   // surface failure to the Playwright Test Runner
+    deferredError = err;   // surface failure to the Playwright Test Runner AFTER the report is written
   } finally {
+    // ── Finalize: attach data for the client HTML report + write Excel ──
+    try {
+      const meta: Record<string, string> = {
+        'Overall Result': overall,
+        'Batch Order ID': batchOrderId || '(not created)',
+        'Weight Input':   config.ardia.weightInput,
+        'Process':        'Hangback',
+        'RAF API':        rafApiVerified === true ? 'POST /RAFLicensePlate/rafjournal → 200 OK' : 'not captured (verified via IsSync)',
+      };
+      const { excelPath } = await report.finalize(testInfo, meta);
+      console.log(`\n📊 Excel report written: ${excelPath}`);
+    } catch (repErr: any) {
+      console.error(`   ⚠ Failed to write report: ${repErr.message}`);
+    }
+
     await d365Context?.close();
     await ardiaContext?.close();
   }
+
+  // Surface failure to the Playwright Test Runner AFTER the report is written.
+  if (deferredError) throw deferredError;
 }
 
 // Run standalone:  npx ts-node tests/tc3.ts
 if (require.main === module) {
   (async () => {
     const browser = await chromium.launch({ headless: false, slowMo: 500, args: ['--ignore-certificate-errors'] });
-    try { await run(browser); } finally { await browser.close(); }
+    try { await run(browser, null); } finally { await browser.close(); }
   })();
 }
 

@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc1';
 
-test('TC001 - Produce workflow: D365 batch order -> Ardia produce -> RAF posting', async ({ browser }) => {
-  await run(browser);
+test('TC001 - Produce workflow: D365 batch order -> Ardia produce -> RAF posting', async ({ browser }, testInfo) => {
+  await run(browser, testInfo);
 });

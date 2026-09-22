@@ -13,6 +13,7 @@ test-results/
 # ── Runtime / generated state ──────────────────────────────
 shared-state.json
 at-counter.json
+.current-run-folder
 
 # ── Debug evidence (screenshots, video, grid dumps) ────────
 screenshot-*.png

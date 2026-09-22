@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc8';
 
-test('TC008 - Reversal: CR Transfer License Plate deletion -> CRT reversal staging', async ({ browser }) => {
-  await run(browser);
+test('TC008 - Reversal: CR Transfer License Plate deletion -> CRT reversal staging', async ({ browser }, testInfo) => {
+  await run(browser, undefined, testInfo);
 });

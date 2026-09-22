@@ -3,8 +3,8 @@
 import { test } from '@playwright/test';
 import { run } from './tc3';
 
-test('TC003/TC004 - Produce via Hangback: D365 batch order -> Ardia -> RAF staging verify', async ({ browser }) => {
+test('TC003/TC004 - Produce via Hangback: D365 batch order -> Ardia -> RAF staging verify', async ({ browser }, testInfo) => {
   // End-to-end: batch create -> Ardia Hangback produce -> ~2 min RAF sync wait -> staging verify.
   test.setTimeout(20 * 60 * 1000);
-  await run(browser);
+  await run(browser, testInfo);
 });

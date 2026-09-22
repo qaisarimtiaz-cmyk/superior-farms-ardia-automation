@@ -50,7 +50,9 @@ export const testData: Record<string, BatchOrderData> = {
     pool: '',
     printer: 'ZPL virtual printer (new)',
     siteDisplayText: "",
-    warehouseDisplayText: "",
+    // Known-good value for site 12 / warehouse 12001, already verified working
+    // in TC10/TC12's Ardia Warehouse dropdown (see ardiaWarehouseText below).
+    warehouseDisplayText: "Dixon - Stock (12001)",
     boxCount: 10
   },
 // ── Test Case 2 ────────────────────────────────────────────
@@ -60,7 +62,7 @@ export const testData: Record<string, BatchOrderData> = {
     configuration: '12026',
     site: '15',
     warehouse: '15001',
-    location: '15140',
+    location: '15145',
     quantity: '10',
     formulaNumber: '',
     pool: '',
@@ -72,7 +74,7 @@ export const testData: Record<string, BatchOrderData> = {
   TC03: {
     description:   'CRT-AT-001',
     itemNumber:    'P12',
-    configuration: '13897',
+    configuration: '13902',
     site:          '17',
     warehouse:     '17001',
     location:      '17140',
@@ -117,7 +119,8 @@ export const testData: Record<string, BatchOrderData> = {
     pool: '',
     printer: 'ZPL virtual printer (new)',
     siteDisplayText: "",
-    warehouseDisplayText: ""
+    // Same site 12 / warehouse 12001 as TC01 — see note there.
+    warehouseDisplayText: "Dixon - Stock (12001)"
   },
 
   // ── Test Case 10 ───────────────────────────────────────────
@@ -144,7 +147,12 @@ export const testData: Record<string, BatchOrderData> = {
     ardiaSiteText:      '- Dixon Ellensburg Lamb',   // partial text is fine
     ardiaWarehouseText: 'Dixon - Stock (12001)',
     ardiaLocationText:  '12140',
-    pickBatchTile:      'Primals12-SF',              // batch tile on the left in Ardia
+    // "Primals12-SF" was stale — the Pick screen's tiles are named by D365
+    // batch order ID, not a formula/product code. AT-138 is a real batch
+    // order this suite itself produced (TC13, 2026-09-21) so it's known to
+    // currently exist; tc10.ts also falls back to the first available tile
+    // if this one isn't found, so this only needs to be "a real tile now".
+    pickBatchTile:      'AT-138',                     // batch tile on the left in Ardia
     pickWeight:         '54',
     manualLicensePlate: '1205202026000003',          // fallback if extraction finds none
   },

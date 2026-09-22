@@ -21,11 +21,41 @@ import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { config }    from '../config';
 import { testData }  from '../test-data';
 import { generateBatchOrderId, peekNextId } from '../utils/generate-id';
+import { writeSharedState } from '../utils/shared-state';
 import { openAuthedD365, openAuthedArdia } from './helpers/auth-flows';
 import { ReportCollector } from './helpers/report-collector';
+import { screenshotPath } from '../utils/run-folder';
 
 const data = testData.TC01;
 const t    = config.timeouts;
+
+/** Scroll the open Ardia dropdown container until `optionText` becomes visible.
+ *  Ardia renders option rows as plain divs (not a virtual-scroll viewport), so
+ *  we bump scrollTop incrementally and re-check — a fixed one-shot scroll +
+ *  hardcoded item index breaks whenever the target isn't at that exact index.
+ *  Ported from the proven implementation in tc12.ts / tc10.ts / tc3.ts. */
+async function scrollArdiaDropdownUntilVisible(page: Page, optionText: string): Promise<void> {
+  await page.waitForTimeout(400); // let the dropdown finish opening
+  const maxScrolls = 30;
+  const container = page
+    .locator('app-input-grid-select > div:nth-child(2), div.dropdownContainer')
+    .last();
+
+  for (let i = 0; i < maxScrolls; i++) {
+    const option = page.getByText(optionText, { exact: false }).first();
+    if (await option.isVisible({ timeout: 400 }).catch(() => false)) {
+      if (i > 0) console.log(`         (found "${optionText}" after ${i} scroll(s))`);
+      return;
+    }
+    const scrolled = await container
+      .evaluate((el: Element) => { (el as HTMLElement).scrollTop += 150; return true; })
+      .catch(() => false);
+    if (!scrolled) {
+      await page.keyboard.press('ArrowDown'); // fallback if container not found
+    }
+    await page.waitForTimeout(200);
+  }
+}
 
 // ── How many boxes to produce ──────────────────────────────
 // Priority: testData.TC01.boxCount → config.ardia.boxCount → default 10.
@@ -188,8 +218,9 @@ export async function run(browser: Browser, testInfo: any = null) {
     await d365Page.waitForLoadState('networkidle', { timeout: t.action });
     await d365Page.waitForTimeout(3000);
     console.log(`✓ Batch Order ${batchOrderId} created\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-created.png' });
-    report.addScreenshot('Batch order created in D365', 'screenshot-batch-order-created.png');
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-created.png') });
+    writeSharedState('TC14', { batchOrderId, generatedAt: new Date().toISOString() });
+    report.addScreenshot('Batch order created in D365', screenshotPath('screenshot-batch-order-created.png'));
     report.add('Create Batch Order in D365', 'PASS', batchOrderId);
 
 
@@ -218,8 +249,8 @@ export async function run(browser: Browser, testInfo: any = null) {
     await d365Page.getByRole('checkbox', { name: 'Select or unselect row' }).first().check();
     await d365Page.waitForTimeout(1000);
     console.log(`✓ Batch Order ${batchOrderId} found and selected\n`);
-    await d365Page.screenshot({ path: 'screenshot-batch-order-selected.png' });
-    report.addScreenshot('Batch order selected in grid', 'screenshot-batch-order-selected.png');
+    await d365Page.screenshot({ path: screenshotPath('screenshot-batch-order-selected.png') });
+    report.addScreenshot('Batch order selected in grid', screenshotPath('screenshot-batch-order-selected.png'));
     report.add('Find & select Batch Order in grid', 'PASS', batchOrderId);
 
 
@@ -233,7 +264,7 @@ export async function run(browser: Browser, testInfo: any = null) {
     const ardiaPage = ardia.page;
     ardiaErrPage = ardiaPage;
     console.log('✓ Ardia ready\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-loggedin.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-loggedin.png') });
     report.add('Open Ardia (authenticated session)', 'PASS');
 
 
@@ -271,17 +302,16 @@ export async function run(browser: Browser, testInfo: any = null) {
     console.log(`         ✓ Site selected: ${data.site}`);
 
     // ── Step 29: Select Warehouse ──────────────────────────────
-    console.log(`Step 29: Selecting Warehouse = "${data.warehouse}"...`);
+    // Scroll incrementally and match by visible text instead of a hardcoded
+    // item index — the index-based approach broke whenever the warehouse
+    // wasn't at the assumed position. Same fix already proven in TC3/TC10/TC12.
+    console.log(`Step 29: Selecting Warehouse = "${data.warehouseDisplayText || data.warehouse}"...`);
     await ardiaPage.locator('div:nth-of-type(4) textarea').click();
     await ardiaPage.waitForTimeout(800);
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]')
-      .evaluate((el: Element) => { el.scrollTop = 1000; });
-    await ardiaPage.waitForTimeout(500);
-    await ardiaPage.locator('div:nth-of-type(4) textarea').click();
-    await ardiaPage.waitForTimeout(500);
-    await ardiaPage.locator('xpath=//html/body/app-root/app-batch-filters/main/div/div[2]/div/div[4]/app-input-grid-select/div[2]/div[25]/div').click();
+    await scrollArdiaDropdownUntilVisible(ardiaPage, data.warehouseDisplayText || data.warehouse);
+    await ardiaPage.getByText(data.warehouseDisplayText || data.warehouse, { exact: !!data.warehouseDisplayText }).first().click();
     await ardiaPage.waitForTimeout(1500);  // Wait for Location list to load
-    console.log(`         ✓ Warehouse selected: ${data.warehouse}`);
+    console.log(`         ✓ Warehouse selected: ${data.warehouseDisplayText || data.warehouse}`);
 
     // ── Step 30: Select Location ───────────────────────────────
     console.log(`Step 30: Selecting Location = "${data.location}"...`);
@@ -291,8 +321,8 @@ export async function run(browser: Browser, testInfo: any = null) {
     await ardiaPage.waitForTimeout(800);
     console.log(`         ✓ Location selected: ${data.location}`);
 
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-filters-selected.png' });
-    report.addScreenshot('Ardia filters selected', 'screenshot-ardia-filters-selected.png');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-filters-selected.png') });
+    report.addScreenshot('Ardia filters selected', screenshotPath('screenshot-ardia-filters-selected.png'));
     report.add('Select Ardia filters (Process/Printer/Site/WH/Location)', 'PASS');
 
     // Verify Proceed button is enabled before clicking
@@ -310,7 +340,7 @@ export async function run(browser: Browser, testInfo: any = null) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(3000);
     console.log('✓ Proceeded to Batch Orders page\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-batch-orders.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-batch-orders.png') });
     report.add('Proceed to Batch Orders page', 'PASS');
 
 
@@ -329,7 +359,7 @@ export async function run(browser: Browser, testInfo: any = null) {
     await orderTile.click();
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Clicked on production order tile\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-tile-selected.png' });
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-tile-selected.png') });
     report.add('Open production order tile in Ardia', 'PASS', batchOrderId);
 
 
@@ -401,8 +431,8 @@ export async function run(browser: Browser, testInfo: any = null) {
       await ardiaPage.waitForTimeout(1200);
     }
 
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-all-boxes-produced.png' });
-    report.addScreenshot('All boxes produced', 'screenshot-ardia-all-boxes-produced.png');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-all-boxes-produced.png') });
+    report.addScreenshot('All boxes produced', screenshotPath('screenshot-ardia-all-boxes-produced.png'));
     console.log(`\n✓ Produced ${boxesProduced} of ${BOX_COUNT} boxes — all RAF calls verified\n`);
     report.add('All boxes produced & RAF verified', 'PASS', `${boxesProduced}/${BOX_COUNT}`);
 
@@ -418,8 +448,8 @@ export async function run(browser: Browser, testInfo: any = null) {
     await ardiaPage.waitForLoadState('networkidle', { timeout: t.navigation });
     await ardiaPage.waitForTimeout(2000);
     console.log('         ✓ Stopped Producing\n');
-    await ardiaPage.screenshot({ path: 'screenshot-ardia-stopped.png' });
-    report.addScreenshot('Stopped producing', 'screenshot-ardia-stopped.png');
+    await ardiaPage.screenshot({ path: screenshotPath('screenshot-ardia-stopped.png') });
+    report.addScreenshot('Stopped producing', screenshotPath('screenshot-ardia-stopped.png'));
     report.add('Stop Producing', 'PASS');
 
 
@@ -438,8 +468,8 @@ export async function run(browser: Browser, testInfo: any = null) {
     overall = 'FAIL';
     console.error(`\n❌ TEST CASE 1 (Multi-Box) FAILED: ${err.message}`);
     report.add('TEST FAILED', 'FAIL', err.message);
-    await ardiaErrPage?.screenshot({ path: 'screenshot-error.png' }).catch(() => {});
-    report.addScreenshot('Failure screenshot', 'screenshot-error.png');
+    await ardiaErrPage?.screenshot({ path: screenshotPath('screenshot-error.png') }).catch(() => {});
+    report.addScreenshot('Failure screenshot', screenshotPath('screenshot-error.png'));
     console.log('   Error screenshot saved: screenshot-error.png');
     console.log('   Batch Order at failure:', batchOrderId || 'not yet created');
     deferredError = err;

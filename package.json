@@ -5,7 +5,7 @@
     "codegen": "playwright codegen --target=typescript",
     "test": "playwright test",
     "test:auth": "playwright test --project=setup",
-    "test:e2e": "playwright test --project=e2e",
+    "test:e2e": "playwright test --project=e2e --no-deps",
     "report": "playwright show-report"
   },
   "dependencies": {

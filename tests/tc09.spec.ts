@@ -3,6 +3,6 @@
 import { test } from '@playwright/test';
 import { run } from './tc9';
 
-test('TC009 - Reversal: Hangback License Plate deletion -> Hangback reversal staging', async ({ browser }) => {
-  await run(browser);
+test('TC009 - Reversal: Hangback License Plate deletion -> Hangback reversal staging', async ({ browser }, testInfo) => {
+  await run(browser, undefined, testInfo);
 });

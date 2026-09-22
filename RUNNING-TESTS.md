@@ -24,7 +24,7 @@ npx playwright test
 npm run test:auth          #  playwright test --project=setup
 
 # Run a single test (sessions must already exist — run `npm run test:auth` first if not)
-npx playwright test tests/tc01.spec.ts --project=e2e
+npx playwright test tests/tc01.spec.ts --project=e2e --no-deps
 
 # Run by title match
 npx playwright test -g "TC001"
